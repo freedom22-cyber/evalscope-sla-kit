@@ -13,15 +13,22 @@
        tools/jsonl_to_prompts.py 转纯文本），已存在则复用
     2. 构建 evalscope perf --sla-auto-tune 命令并顺序执行
     3. 每个场景独立 outputs-dir: results/<场景ID>/<时间戳>/
+    4. time_budget_min>0 时预算到限终止该场景，并按已完成探测档算 partial 结论
+       落盘 results/<场景ID>/partial_summary.json（最大达标并发是真实上限的下界）;
+       health_check_interval_s>0 时压测期间定期探活 /v1/models，连续失败只告警
 """
 import argparse
+import glob
 import json
 import os
 import re
 import shlex
+import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import urlsplit
 
 KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +48,19 @@ TOOL_DIR = os.path.join(KIT_ROOT, "tools")
 
 # evalscope 对 custom 数据集的 prompt 过滤阈值 = input_len + 模板开销(~2000)
 PROMPT_FILTER_MARGIN = 2000
+
+# benchmark_summary.json 顶层指标键名（与 evalscope perf_constants 一致），partial 判定用
+BS_TTFT = "Avg TTFT (ms)"
+BS_TPOT = "Avg TPOT (ms)"
+BS_OK = "Success Requests"
+BS_FAIL = "Failed Requests"
+BS_TOTAL = "Total Requests"
+# 探测目录名形如 sla_parallel_4_run_1
+PROBE_DIR_RE = re.compile(r"^sla_parallel_(\d+)_run_(\d+)$")
+
+# 健康探活走直连（等价 curl --noproxy '*'，避免 http_proxy 环境变量把内网探活
+# 路由到代理而误报服务无响应）
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def parse_len(s: str) -> int:
@@ -246,6 +266,162 @@ def build_evalscope_cmd(cfg: dict, sc: dict, dataset_path: str = None) -> list:
     return cmd
 
 
+def health_probe_url(svc: dict) -> str:
+    """健康探活地址: 服务 url 的 scheme://netloc + /v1/models"""
+    u = urlsplit(svc["url"])
+    return f"{u.scheme}://{u.netloc}/v1/models"
+
+
+def probe_alive(url: str) -> bool:
+    """GET /v1/models 连通性检查: 任意 HTTP 状态码都算存活, URLError/超时算失败"""
+    try:
+        resp = _NO_PROXY_OPENER.open(url, timeout=5)
+        resp.close()
+        return True
+    except urllib.error.HTTPError:
+        return True  # 有 HTTP 响应（含 4xx/5xx）= 服务进程在, 只是该路径不可达
+    except Exception:
+        return False  # URLError / 超时 / 连接拒绝
+
+
+def run_with_watchdog(cmd: list, cfg: dict) -> tuple:
+    """执行压测命令, 支持预算看门狗 + 健康探活。返回 (killed, returncode)。
+
+    - time_budget_min>0: 每 5s 轮询, 超预算 kill 后由调用方走 partial 判定
+    - health_check_interval_s>0: 轮询期间按间隔探活 /v1/models, 连续失败只告警不杀进程
+    - 两者都为 0 时保持原 subprocess.run 行为
+    """
+    bench = cfg["benchmark"]
+    budget_min = bench.get("time_budget_min") or 0
+    budget_s = budget_min * 60.0 if budget_min else 0
+    itv_s = bench.get("health_check_interval_s") or 0
+    if budget_s <= 0 and itv_s <= 0:
+        return False, subprocess.run(cmd).returncode
+
+    probe_url = health_probe_url(cfg["service"]) if itv_s > 0 else None
+    t0 = time.time()
+    p = subprocess.Popen(cmd)
+    fail_n, next_probe = 0, t0 + itv_s
+    while True:
+        rc = p.poll()
+        if rc is not None:
+            return False, rc
+        now = time.time()
+        if budget_s > 0 and now - t0 >= budget_s:
+            print(f"  [预算看门狗] 已达时间预算 {budget_min} 分钟, 终止该场景")
+            p.kill()
+            p.wait()
+            return True, None
+        if probe_url and now >= next_probe:
+            if probe_alive(probe_url):
+                fail_n = 0
+            else:
+                fail_n += 1
+                print(f"  [健康探活] 服务无响应(连续 {fail_n} 次): {probe_url}")
+                if fail_n >= 3:
+                    print("  [健康探活] 疑似服务异常, 请检查服务端日志")
+            next_probe = now + itv_s
+        # 轮询步长 5s; 有探活/预算时对齐到下一个事件（下次探活 / 预算到期）, 保证间隔粒度
+        wake = now + 5.0
+        if probe_url:
+            wake = min(wake, next_probe)
+        if budget_s > 0:
+            wake = min(wake, t0 + budget_s)
+        time.sleep(max(0.1, wake - time.time()))
+
+
+def _fnum(v):
+    """安全转 float, 失败返回 None"""
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _inum(v):
+    """安全转 int, 失败返回 0"""
+    try:
+        return int(v) if v is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def partial_verdict(results_dir: str, sid: str, sc: dict, budget_min) -> None:
+    """预算到限被切断后的 partial 判定（借鉴 sunzhi sla_lib 规则）。
+
+    逐档解析 <时间戳>/<model>/sla_tuning/sla_parallel_N_run_M/benchmark_summary.json:
+    TTFT/TPOT 按 run 取算术平均, Success/Failed/Total 按 run 求和,
+    缺 benchmark_summary.json 的档（被切断）跳过;
+    达标 = Failed 之和为 0 且 TTFT/TPOT 双达标, selected = 达标档中最大 N（真实上限的下界）。
+    全程不抛异常: 任何解析失败只打警告, 绝不影响主流程。
+    """
+    try:
+        sdir = os.path.join(results_dir, sid)
+        ts_dirs = sorted(d for d in glob.glob(os.path.join(sdir, "*")) if os.path.isdir(d))
+        if not ts_dirs:
+            print(f"  [partial] 未找到结果目录 {sdir}/<时间戳>/, 跳过 partial 判定")
+            return
+        mdir = ts_dirs[-1]  # 最新时间戳目录
+        subs = sorted(d for d in glob.glob(os.path.join(mdir, "*")) if os.path.isdir(d))
+        if subs:
+            mdir = subs[0]  # 其下的模型目录（取第一个; 没有子目录就用本身）
+        runs = {}
+        for probe in sorted(glob.glob(os.path.join(mdir, "sla_tuning", "sla_parallel_*_run_*"))):
+            mo = PROBE_DIR_RE.match(os.path.basename(probe))
+            bs = os.path.join(probe, "benchmark_summary.json")
+            if not mo or not os.path.isfile(bs):
+                continue  # 无 benchmark_summary.json = 该档被切断, 跳过
+            with open(bs, encoding="utf-8") as f:
+                data = json.load(f)
+            m = data if BS_TTFT in data else (data.get("metrics") or data)
+            runs.setdefault(int(mo.group(1)), []).append({
+                "ttft": _fnum(m.get(BS_TTFT)), "tpot": _fnum(m.get(BS_TPOT)),
+                "succ": _inum(m.get(BS_OK)), "failed": _inum(m.get(BS_FAIL)),
+                "total": _inum(m.get(BS_TOTAL)),
+            })
+        if not runs:
+            print(f"  [partial] {mdir} 下没有已完成的探测档, 无 partial 结论")
+            return
+        probes = {}
+        for n in sorted(runs):
+            rs = runs[n]
+            ttfts = [r["ttft"] for r in rs if r["ttft"] is not None]
+            tpots = [r["tpot"] for r in rs if r["tpot"] is not None]
+            ttft = round(statistics.fmean(ttfts), 1) if ttfts else None
+            tpot = round(statistics.fmean(tpots), 2) if tpots else None
+            failed = sum(r["failed"] for r in rs)
+            probes[n] = {
+                "ttft": ttft, "tpot": tpot,
+                "succ": sum(r["succ"] for r in rs),
+                "failed": failed,
+                "total": sum(r["total"] for r in rs),
+                "runs": len(rs),
+                "pass": (failed == 0 and ttft is not None and tpot is not None
+                         and ttft <= sc["ttft_sla_ms"] and tpot <= sc["tpot_sla_ms"]),
+            }
+        passing = [n for n, v in probes.items() if v["pass"]]
+        selected = max(passing) if passing else None
+        with open(os.path.join(sdir, "partial_summary.json"), "w", encoding="utf-8") as f:
+            json.dump({"status": "partial", "budget_min": budget_min,
+                       "selected": selected, "probes": probes},
+                      f, ensure_ascii=False, indent=2)
+        print(f"  [partial] 逐探测档判定 (SLA: TTFT<={sc['ttft_sla_ms']}ms / "
+              f"TPOT<={sc['tpot_sla_ms']}ms)")
+        print(f"    {'并发':>6} {'TTFT(ms)':>10} {'TPOT(ms)':>9} {'成功/总':>10} {'轮数':>4} {'判定':>6}")
+        for n, v in probes.items():
+            ttft_s = f"{v['ttft']:.0f}" if v["ttft"] is not None else "-"
+            tpot_s = f"{v['tpot']:.2f}" if v["tpot"] is not None else "-"
+            succ_s = f"{v['succ']}/{v['total']}"
+            print(f"    {n:>6} {ttft_s:>10} {tpot_s:>9} {succ_s:>10} {v['runs']:>4} "
+                  f"{'PASS' if v['pass'] else 'FAIL':>6}")
+        sel = selected if selected is not None else "无"
+        print(f"  摸高结论(partial): 最大达标并发={sel}"
+              f"（真实上限的下界, 预算 {budget_min}min 到限终止）")
+        print(f"  [partial] partial_summary.json 已写入: {os.path.join(sdir, 'partial_summary.json')}")
+    except Exception as e:
+        print(f"  [partial] 解析失败, 跳过 partial 判定: {e}")
+
+
 def run_scenario(cfg: dict, sc: dict, dry_run: bool) -> int:
     sid = scenario_id(sc)
     print(f"\n{'=' * 70}\n[场景 {sid}]  {sc['raw']}")
@@ -257,11 +433,16 @@ def run_scenario(cfg: dict, sc: dict, dry_run: bool) -> int:
     if dry_run:
         return 0
     t0 = time.time()
-    r = subprocess.run(cmd)
+    killed, rc = run_with_watchdog(cmd, cfg)
     dt = time.time() - t0
-    status = "OK" if r.returncode == 0 else f"FAILED({r.returncode})"
+    if killed:
+        # 预算到限被看门狗终止: 按已完成探测档算 partial 结论（真实上限的下界）
+        print(f"  [{sid}] PARTIAL  耗时 {dt / 60:.1f} 分钟")
+        partial_verdict(RESULTS_DIR, sid, sc, cfg["benchmark"].get("time_budget_min") or 0)
+        return 0
+    status = "OK" if rc == 0 else f"FAILED({rc})"
     print(f"  [{sid}] {status}  耗时 {dt / 60:.1f} 分钟")
-    return r.returncode
+    return rc
 
 
 def main():
@@ -271,6 +452,9 @@ def main():
     ap.add_argument("--list", action="store_true", help="列出启用场景后退出")
     ap.add_argument("--only", default=None,
                     help="只跑指定场景 ID（逗号分隔多个），如 random_1k_1k,gsm8k_64k_1k_hit30pct")
+    # 兼容位: run.sh 用 -f/--foreground 决定前台/nohup 分支后原样透传, 此处仅接收不生效
+    ap.add_argument("-f", "--foreground", action="store_true",
+                    help="前台运行（实际由 run.sh 处理, runner 侧仅为兼容接收）")
     args = ap.parse_args()
 
     cfg = load_config(args.config)

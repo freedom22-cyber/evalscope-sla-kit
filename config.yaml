@@ -40,6 +40,13 @@ benchmark:
   warmup_num: 10
   # 数据集生成 worker 进程数（0 = 按 CPU 自动；内存受限的客户端机器建议 1）
   num_workers: 0
+  # 单场景时间预算（分钟）。>0 时到限终止该场景, 并按已完成的探测档
+  # (results/<场景ID>/<时间戳>/<model>/sla_tuning/sla_parallel_N_run_M/benchmark_summary.json)
+  # 计算 partial 结论: 最大达标并发是真实上限的下界。0 = 不限制
+  time_budget_min: 0
+  # 压测运行中健康探活间隔（秒）。>0 时定期 GET 服务的 /v1/models（连通性检查,
+  # 任意 HTTP 状态码都算存活），连续失败时打告警。0 = 关闭
+  health_check_interval_s: 60
   # 请求采样参数（原样透传给 evalscope --extra-args 的 JSON）
   # ignore_eos=true: 输出固定到 max_tokens，TPOT/吞吐才可比
   # thinking 模型必须带 chat_template_kwargs.thinking=false，否则思考 token
@@ -111,3 +118,45 @@ scenarios:
   - "gsm8k, 256k, 1k, 0.9, 1, 10000, 50"
   - "gsm8k, 512k, 1k, 0.9, 1, 10000, 50"
   - "gsm8k, 1000k, 1k, 0.9, 1, 10000, 50"
+
+# ============================================================================
+# 精度测试（迁移自 sunzhi_sla_eval run208.sh cmd_accuracy, 通用化）
+# ----------------------------------------------------------------------------
+# 用法: bash run.sh --accuracy            # 后台跑所有启用数据集组
+#       bash run.sh --accuracy -f         # 前台
+#       python3 accuracy_runner.py --list / --dry-run / --only gsm8k / --report
+# 数据集行格式（逗号分隔, 顺序固定）:
+#   "tag, evalscope_datasets, rounds, effort, max_tokens, batch_size"
+#   tag              : 数据集组名（结果目录 results/accuracy/<tag>_r<N>/）
+#   evalscope_datasets: 传给 --datasets 的值（空格分隔多个, 如 "aime25 aime26"）
+#   rounds           : 重复轮数（每轮独立 work-dir, 便于算均值/方差）
+#   effort           : reasoning_effort（low/high/xhigh/max/none; 注意 "medium"
+#                      在部分服务上是已知 400 缺陷, 见 sunzhi 仓 F-03）
+#   max_tokens       : 生成上限
+#   batch_size       : --eval-batch-size
+# ============================================================================
+accuracy:
+  # evalscope 可执行文件（也可被环境变量 EVALSCOPE_BIN 覆盖, 与 performance/env.sh 同名约定）
+  evalscope_bin: evalscope
+  # 非空时运行中导出 http_proxy/https_proxy（evalscope 首次下载数据集需要外网;
+  # 被测服务地址会自动加入 no_proxy）
+  proxy: ""
+  datasets:
+    - "gsm8k, gsm8k, 1, max, 131072, 32"
+    - "mmlu, mmlu, 1, max, 131072, 32"
+    - "gpqa, gpqa_diamond, 1, max, 131072, 32"
+    - "aime, aime25 aime26, 1, max, 131072, 32"
+
+# ============================================================================
+# 功能测试（迁移自 sunzhi_sla_eval cmd_functional, Python 原生 urllib 实现）
+# ----------------------------------------------------------------------------
+# 用法: bash run.sh --functional            # 后台跑全部检查
+#       bash run.sh --functional -f         # 前台
+#       python3 functional_runner.py --list / --dry-run / --only F-01a,F-03
+# 判定口径: PASS / FAIL / KNOWN-DEFECT（已知缺陷, 不计 FAIL）/ SKIP
+# 已知缺陷: reasoning_effort="medium" 在部分服务上必 400（sunzhi F-03 沉淀）
+# ============================================================================
+functional:
+  timeout_s: 60                    # 单请求超时（秒）
+  efforts: [low, high, xhigh, max] # F-03 effort 矩阵（medium 由 F-03_medium 专项检查）
+  skip: []                         # 跳过的检查 tag, 如 [F-05_claude]
