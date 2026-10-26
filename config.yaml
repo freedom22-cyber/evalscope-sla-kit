@@ -72,7 +72,7 @@ dataset:
 # 测试场景（固定清单，按需注释/取消注释）
 # ----------------------------------------------------------------------------
 # 每行一个场景，格式（逗号分隔，顺序固定）:
-#   "dataset, input_len, output_len, cache_hit_rate, prefix_num, ttft_sla_ms, tpot_sla_ms"
+#   "dataset, input_len, output_len, cache_hit_rate, prefix_num, ttft_sla_ms, tpot_sla_ms [, dataset_num]"
 #
 #   dataset        : random | gsm8k
 #   input_len      : 输入 token 数（k 简写 = x1024，如 1k=1024, 1000k=1024000）
@@ -81,11 +81,14 @@ dataset:
 #   prefix_num     : 前缀数量（固定 1）
 #   ttft_sla_ms    : avg TTFT SLA 上限（毫秒）
 #   tpot_sla_ms    : avg TPOT SLA 上限（毫秒）
+#   dataset_num    : （可选）数据集条数，仅 gsm8k 有效；不填 = 用 dataset.gsm8k_number 全局默认
 #
 # 注意:
 #   - random 数据集由 evalscope 在线生成（0% 缓存命中，跨轮自动偏移防命中）
 #   - gsm8k 数据集由 run.sh 自动生成+转格式（需要 tokenizer 与 torch/transformers）
+#   - 数据集按文件名复用：相同 (input_len, hit_rate, dataset_num) 只生成一次
 #   - 注释行 = 跳过该场景；取消注释 = 启用
+#   - 批量预生成数据集: bash run.sh --gen-datasets
 # ============================================================================
 scenarios:
   # ---- random：短中长输入，TTFT<=10s / TPOT<=50ms ----
@@ -96,7 +99,7 @@ scenarios:
   - "random, 1k, 32k, 0, 1, 3000, 50"
   - "random, 1k, 64k, 0, 1, 3000, 50"
   # ---- gsm8k 0% 缓存命中，TTFT<=60s / TPOT<=50ms ----
-  - "gsm8k, 16k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 16k, 1k, 0, 1, 60000, 50, 500"
   - "gsm8k, 32k, 1k, 0, 1, 60000, 50"
   - "gsm8k, 64k, 1k, 0, 1, 60000, 50"
   - "gsm8k, 75k, 1k, 0, 1, 60000, 50"

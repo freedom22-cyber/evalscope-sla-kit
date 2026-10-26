@@ -85,15 +85,16 @@ def parse_hit_rate(s: str) -> float:
 
 def parse_scenario(line: str) -> dict:
     parts = [p.strip() for p in line.split(",")]
-    if len(parts) != 7:
-        raise ValueError(f"场景行格式错误（需 7 个逗号分隔字段）: {line!r}")
-    dset, in_len, out_len, hit, pnum, ttft, tpot = parts
+    if len(parts) < 7 or len(parts) > 8:
+        raise ValueError(f"场景行格式错误（需 7-8 个逗号分隔字段）: {line!r}")
+    dset, in_len, out_len, hit, pnum, ttft, tpot = parts[:7]
+    dataset_num = parts[7] if len(parts) == 8 else None
     if dset not in ("random", "gsm8k"):
         raise ValueError(f"数据集类型必须是 random/gsm8k: {line!r}")
     hit_rate = parse_hit_rate(hit)
     if dset == "random" and hit_rate != 0:
         raise ValueError(f"random 数据集不支持缓存命中率: {line!r}")
-    return {
+    sc = {
         "dataset": dset,
         "input_len": parse_len(in_len),
         "output_len": parse_len(out_len),
@@ -103,6 +104,9 @@ def parse_scenario(line: str) -> dict:
         "tpot_sla_ms": int(tpot),
         "raw": line,
     }
+    if dataset_num is not None and dataset_num != "":
+        sc["dataset_num"] = int(dataset_num)
+    return sc
 
 
 def scenario_id(sc: dict) -> str:
@@ -140,11 +144,14 @@ def build_headers(cfg: dict) -> list:
 
 
 def dataset_number(cfg: dict, sc: dict) -> int:
-    """数据集条数：用例级覆盖 -> (input_len, hit_rate) 覆盖 -> 全局默认。
+    """数据集条数：场景级 dataset_num -> 用例级覆盖 -> (input_len, hit_rate) 覆盖 -> 全局默认。
 
-    Web UI 按用例存条数（case_number_overrides[case_id]）；文件名含条数，
+    场景行第 8 字段 dataset_num 优先；Web UI 按用例存条数
+    （case_number_overrides[case_id]）；文件名含条数，
     相同 (input_len, hit_rate, 条数) 的用例天然复用同一数据集文件。
     """
+    if sc.get("dataset_num") is not None:
+        return int(sc["dataset_num"])
     ds = cfg["dataset"]
     case_ov = ds.get("case_number_overrides") or {}
     if sc.get("id") and sc["id"] in case_ov:
@@ -450,6 +457,8 @@ def main():
     ap.add_argument("--config", default=DEFAULT_CONFIG, help="配置文件路径")
     ap.add_argument("--dry-run", action="store_true", help="只打印命令不执行")
     ap.add_argument("--list", action="store_true", help="列出启用场景后退出")
+    ap.add_argument("--gen-datasets", action="store_true",
+                    help="批量生成所有启用 gsm8k 场景的数据集（按文件名去重复用），不执行测试")
     ap.add_argument("--only", default=None,
                     help="只跑指定场景 ID（逗号分隔多个），如 random_1k_1k,gsm8k_64k_1k_hit30pct")
     # 兼容位: run.sh 用 -f/--foreground 决定前台/nohup 分支后原样透传, 此处仅接收不生效
@@ -485,6 +494,39 @@ def main():
     os.makedirs(DATASETS_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(LOGS_DIR, exist_ok=True)
+
+    if args.gen_datasets:
+        gsm8k_scenarios = [sc for sc in scenarios if sc["dataset"] == "gsm8k"]
+        if not gsm8k_scenarios:
+            print("没有启用的 gsm8k 场景，无需生成数据集")
+            return 0
+        seen = set()
+        total = len(gsm8k_scenarios)
+        done = 0
+        skipped = 0
+        for sc in gsm8k_scenarios:
+            sid = scenario_id(sc)
+            jsonl_path, prompts_path = gsm8k_dataset_paths(cfg, sc)
+            key = os.path.basename(prompts_path)
+            n = dataset_number(cfg, sc)
+            if key in seen:
+                print(f"  [复用] {sid} -> {key}")
+                skipped += 1
+                continue
+            seen.add(key)
+            if os.path.exists(prompts_path) and not cfg["dataset"].get("force_regenerate"):
+                print(f"  [已存在] {sid} -> {key}  ({os.path.getsize(prompts_path)} bytes)")
+                skipped += 1
+                continue
+            print(f"\n>>> 生成 {done + 1}/{total}: {sid}  (num={n})")
+            try:
+                ensure_gsm8k_dataset(cfg, sc, args.dry_run)
+                done += 1
+            except Exception as e:
+                print(f"  [失败] {sid}: {e}")
+        print(f"\n{'=' * 70}")
+        print(f"数据集生成完成: 新生成 {done}，复用/已存在 {skipped}，共 {total} 个 gsm8k 场景")
+        return 0
 
     print(f"目标服务: {cfg['service']['url']}  模型: {cfg['service']['model']}")
     print(f"启用场景: {len(scenarios)} 个")

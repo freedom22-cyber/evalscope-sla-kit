@@ -6,6 +6,7 @@
 #   bash run.sh -f                  # 前台跑（调试用，看实时输出）
 #   bash run.sh --dry-run           # 只打印命令不执行
 #   bash run.sh --list              # 列出启用场景 ID
+#   bash run.sh --gen-datasets      # 批量预生成所有启用 gsm8k 场景的数据集
 #   bash run.sh --only <id[,id2]>   # 只跑指定场景
 #   bash run.sh --report [--npu 16] # 汇总已有摸高结果
 #   bash run.sh --accuracy          # 后台跑精度（accuracy_runner.py, 日志 acc_*.log）
@@ -32,7 +33,7 @@ TS=$(date +%Y%m%d_%H%M%S)
 LOG="logs/${PREFIX}_${TS}.log"
 mkdir -p logs
 
-if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "--dry-run" ]; then
+if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "--dry-run" ] || [ "${1:-}" = "--gen-datasets" ] || [ "${1:-}" = "--list" ]; then
   # 注意: exec 在管道里不会终止脚本（只替换管道子进程）, 前台跑完必须显式 exit,
   # 否则会继续落到下方 nohup 分支把整套测试再后台跑一遍
   "$PY" "$RUNNER" "$@" 2>&1 | tee "$LOG"
