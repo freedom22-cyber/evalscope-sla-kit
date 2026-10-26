@@ -43,6 +43,7 @@
   button.primary:hover { background: #325fc7; }
   button.danger { color: #b42318; border-color: #fecdca; }
   button.small { padding: 4px 10px; font-size: 12px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
   .row-actions { margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef0f3; }
@@ -227,15 +228,21 @@ async function renderCases() {
   cases.forEach(c => {
     const tr = el('tr');
     tr.dataset.id = c.id;
+    const genSt = c.dataset_gen_status || 'idle';
+    const genErr = c.dataset_gen_error;
+    const isGen = genSt === 'generating';
+    const genLabel = isGen ? '生成中…' : (c.dataset_exists ? '重新生成' : '生成');
     const dsCell = (c.dataset === 'gsm8k')
       ? ((c.dataset_num||'默认') + ' '
-        + '<button class="small" data-gen="' + c.id + '">' + (c.dataset_exists ? '重新生成' : '生成') + '</button>')
+        + '<button class="small" data-gen="' + c.id + '"' + (isGen?' disabled':'') + '>' + genLabel + '</button>')
       : '<span class="muted">—</span>';
-    const stCell = (c.dataset === 'gsm8k')
-      ? (c.dataset_exists
-          ? '<span class="pill done">已生成</span>' + (c.dataset_shared?' <span class="muted">复用</span>':'')
-          : '<span class="pill not_started">未生成</span>')
-      : '<span class="muted">在线生成</span>';
+    let stCell;
+    if (c.dataset === 'gsm8k') {
+      if (isGen) stCell = '<span class="pill running">生成中</span>';
+      else if (genSt === 'error') stCell = '<span class="pill error" title="' + (genErr||'') + '">生成失败</span>';
+      else if (c.dataset_exists) stCell = '<span class="pill done">已生成</span>' + (c.dataset_shared?' <span class="muted">复用</span>':'');
+      else stCell = '<span class="pill not_started">未生成</span>';
+    } else stCell = '<span class="muted">在线生成</span>';
     tr.innerHTML =
       '<td><input type="checkbox" class="en" ' + (c.enabled!==false?'checked':'') + '></td>'
       + '<td><code>' + c.id + '</code></td>'
@@ -299,9 +306,19 @@ async function delCase(id) {
   toast('已删除'); renderCases();
 }
 async function genCase(id) {
-  await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({case_ids:[id]})});
-  toast('已开始生成数据集: ' + id);
-  setTimeout(renderCases, 1500);
+  const btn = document.querySelector('[data-gen="'+id+'"]');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({case_ids:[id]})});
+  if (r.ok && r.count > 0) toast('开始生成数据集: ' + id);
+  else if (r.ok && r.count === 0) toast('该数据集正在生成中或已生成');
+  else toast('生成请求失败');
+  // 轮询状态直到非 generating
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r=>setTimeout(r,2000));
+    const {cases} = await api('/api/cases');
+    const c = cases.find(x=>x.id===id);
+    if (!c || c.dataset_gen_status !== 'generating') { renderCases(); break; }
+  }
 }
 async function detectDatasets() {
   await api('/api/cases');   // 触发后端重算数据集状态
@@ -341,6 +358,8 @@ async function renderProjects() {
     projects.forEach(p => {
       const total = p.case_count || 0;
       const pct = total ? Math.round((p.done||0)/total*100) : 0;
+      const running = !!p.is_running;
+      const started = !!p.has_started;
       const card = el('div', {cls:'proj-card'});
       card.append(el('h3', {}, '📦 ' + p.name));
       card.append(el('div', {cls:'meta'},
@@ -348,9 +367,15 @@ async function renderProjects() {
       card.append(el('div', {cls:'bar', html:'<div style="width:'+pct+'%"></div>'}));
       const ops = el('div', {cls:'row-actions'});
       ops.append(el('button', {cls:'small', onclick:()=>openProject(p.id)}, '打开'));
-      ops.append(el('button', {cls:'small primary', onclick:()=>runProject(p.id)}, '▶ 启动'));
-      ops.append(el('button', {cls:'small danger', onclick:()=>stopProject(p.id)}, '■ 终止'));
-      ops.append(el('button', {cls:'small danger', onclick:()=>delProject(p.id)}, '删除'));
+      const runBtn = el('button', {cls:'small primary', onclick:()=>runProject(p.id)}, '▶ 启动');
+      runBtn.disabled = running;
+      ops.append(runBtn);
+      const stopBtn = el('button', {cls:'small danger', onclick:()=>stopProject(p.id)}, '■ 终止');
+      stopBtn.disabled = !running;
+      ops.append(stopBtn);
+      const delBtn = el('button', {cls:'small danger', onclick:()=>delProject(p.id)}, '删除');
+      delBtn.disabled = running;
+      ops.append(delBtn);
       card.append(ops);
       grid.append(card);
     });
@@ -417,9 +442,14 @@ async function renderProjectDetail(pid) {
   m.append(el('h1', {}, '📦 ' + d.project.name));
   m.append(el('div', {cls:'sub'}, '工程 ID: ' + pid + ' · 用例 ' + d.cases.length + ' · 创建 ' + (d.project.created||'')));
 
+  const anyRunning = d.cases.some(c => c.status === 'running' || c.status === 'pending');
   const bar = el('div', {cls:'toolbar'});
-  bar.append(el('button', {cls:'primary', onclick:()=>runProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '▶ 启动全部用例'));
-  bar.append(el('button', {cls:'danger', onclick:()=>stopProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '■ 终止'));
+  const startBtn = el('button', {cls:'primary', onclick:()=>runProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '▶ 启动全部用例');
+  startBtn.disabled = anyRunning;
+  bar.append(startBtn);
+  const stopBtn = el('button', {cls:'danger', onclick:()=>stopProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '■ 终止');
+  stopBtn.disabled = !anyRunning;
+  bar.append(stopBtn);
   bar.append(el('span', {cls:'spacer'}));
   bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderProjectDetail(pid)}}, '刷新')));
   m.append(bar);
@@ -443,7 +473,9 @@ async function renderProjectDetail(pid) {
       + '<td></td>';
     const op = tr.lastElementChild;
     op.append(el('button', {cls:'small', onclick:()=>openCase(pid,c.case_id)}, '查看结果'));
-    op.append(el('button', {cls:'small', onclick:()=>runOne(pid,c.case_id)}, '运行'));
+    const runBtn = el('button', {cls:'small', onclick:()=>runOne(pid,c.case_id)}, '运行');
+    runBtn.disabled = (c.status === 'running' || c.status === 'pending');
+    op.append(runBtn);
     if (c.error) op.append(el('span', {cls:'muted', style:'margin-left:6px'}, '⚠ ' + c.error));
     tbody.append(tr);
   });
@@ -526,8 +558,14 @@ async function go(view) {
 }
 document.querySelectorAll('#nav a').forEach(a => a.onclick = () => go(a.dataset.view));
 
-/* 自动刷新：测试工程详情页 5 秒刷新 */
+/* 自动刷新：测试工程详情页 5 秒刷新；测试用例页有生成中任务时 3 秒刷新 */
 setInterval(() => { if (VIEW === 'projects' && CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); }, 5000);
+setInterval(() => {
+  if (VIEW === 'cases') {
+    const gen = document.querySelector('[data-gen][disabled]');
+    if (gen) renderCases();
+  }
+}, 3000);
 
 go('config');
 </script>
