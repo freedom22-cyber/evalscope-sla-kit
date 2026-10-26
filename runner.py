@@ -119,10 +119,21 @@ def build_headers(cfg: dict) -> list:
     return headers
 
 
+def dataset_number(cfg: dict, sc: dict) -> int:
+    """数据集条数：per-(input_len, hit_rate) 覆盖优先，其次全局 gsm8k_number。
+
+    相同 (input_len, hit_rate) 的场景共用同一个数据集文件（按文件名复用），
+    Web UI 的按数据集条数覆盖就存在 cfg['dataset']['number_overrides'] 里。
+    """
+    overrides = (cfg["dataset"].get("number_overrides") or {})
+    key = f"{sc['input_len']}_{sc['hit_rate']}"
+    return int(overrides.get(key, cfg["dataset"]["gsm8k_number"]))
+
+
 def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
     """返回 (jsonl_path, prompts_path)；文件名规则与 gen_dataset_only.py 一致"""
     tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
-    n = cfg["dataset"]["gsm8k_number"]
+    n = dataset_number(cfg, sc)
     in_len = sc["input_len"]
     hit = sc["hit_rate"]
     if hit == 0:
@@ -135,10 +146,15 @@ def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
     return jsonl, prompts
 
 
-def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False) -> str:
-    """确保 gsm8k 数据集存在，返回 prompts.txt 路径。不存在则生成。"""
+def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False,
+                         force: bool = False, log_handle=None) -> str:
+    """确保 gsm8k 数据集存在，返回 prompts.txt 路径。不存在则生成。
+
+    force=True 或 cfg dataset.force_regenerate 时强制重新生成。
+    log_handle 传入文件对象时，子进程输出重定向到该文件（Web UI 用）。
+    """
     jsonl_path, prompts_path = gsm8k_dataset_paths(cfg, sc)
-    if os.path.exists(prompts_path) and not cfg["dataset"].get("force_regenerate"):
+    if os.path.exists(prompts_path) and not (force or cfg["dataset"].get("force_regenerate")):
         return prompts_path
     if dry_run:
         print(f"    [dry-run] 将生成数据集: {prompts_path}")
@@ -149,7 +165,7 @@ def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False) -> str:
         sys.executable, os.path.join(TOOL_DIR, "gen_dataset_only.py"),
         "--tokenizer_path", cfg["service"]["tokenizer_path"],
         "--input_len", str(sc["input_len"]),
-        "--number", str(ds_cfg["gsm8k_number"]),
+        "--number", str(dataset_number(cfg, sc)),
         "--save_path", DATASETS_DIR,
         "--seed", str(ds_cfg["gsm8k_seed"]),
         "--prefix_num", str(sc["prefix_num"] or ds_cfg.get("gsm8k_prefix_num", 1)),
@@ -157,18 +173,19 @@ def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False) -> str:
     ]
     if sc["hit_rate"] > 0:
         cmd += ["--prefix_flag", "1", "--repeat_rate", str(sc["hit_rate"])]
-    if ds_cfg.get("force_regenerate"):
+    if ds_cfg.get("force_regenerate") or force:
         cmd.append("--force_regenerate")
     print(f"    生成数据集: {os.path.basename(jsonl_path)}")
     # gen_dataset_only.py 必须在 tool/ 目录下跑（GSM8K.jsonl 是相对路径）
-    r = subprocess.run(cmd, cwd=TOOL_DIR)
+    r = subprocess.run(cmd, cwd=TOOL_DIR, stdout=log_handle, stderr=subprocess.STDOUT)
     if r.returncode != 0:
         raise RuntimeError(f"数据集生成失败: {' '.join(cmd)}")
     if not os.path.exists(jsonl_path):
         raise RuntimeError(f"数据集生成后未找到: {jsonl_path}")
 
     # jsonl -> 纯文本 prompts（evalscope custom 插件要求）
-    r = subprocess.run([sys.executable, os.path.join(TOOL_DIR, "jsonl_to_prompts.py"), jsonl_path])
+    r = subprocess.run([sys.executable, os.path.join(TOOL_DIR, "jsonl_to_prompts.py"), jsonl_path],
+                       stdout=log_handle, stderr=subprocess.STDOUT)
     if r.returncode != 0 or not os.path.exists(prompts_path):
         raise RuntimeError(f"prompts 转换失败: {prompts_path}")
     return prompts_path

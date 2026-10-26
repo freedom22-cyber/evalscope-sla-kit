@@ -13,9 +13,11 @@ PY="${PYTHON:-python3}"
 echo "== [1/4] 检查 Python =="
 "$PY" --version || { echo "未找到 python3"; exit 1; }
 
-echo "== [2/4] 安装 evalscope[perf] =="
+echo "== [2/4] 安装 evalscope[perf] + Web 依赖 =="
 "$PY" -m pip install "evalscope[perf]" -i "$PIP_INDEX" 2>/dev/null \
   || "$PY" -m pip install "evalscope[perf]" -i "$PIP_INDEX" --no-build-isolation
+# Web 前端后端（fastapi + uvicorn）
+"$PY" -m pip install fastapi uvicorn -i "$PIP_INDEX" -q 2>/dev/null || true
 
 echo "== [3/4] 修复已知依赖坑 =="
 # 坑1: openai 版本不匹配 -> cannot import name 'APIStatusError'

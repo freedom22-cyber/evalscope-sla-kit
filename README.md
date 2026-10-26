@@ -12,11 +12,33 @@ evalscope_sla_kit/
 ├── config.yaml       # 全部配置：服务地址、模型名、Host 头开关、场景清单
 ├── runner.py         # 场景解析 + 数据集生成 + evalscope 命令构建执行
 ├── report.py         # 结果汇总（并发-指标表，可折算单卡吞吐）
+├── webapp.py         # Web 控制台后端（FastAPI）
+├── web/index.html    # Web 控制台前端（三视图单页）
 ├── tools/            # gsm8k 数据集生成工具（aisbench）+ jsonl→prompts 转换
 ├── datasets/         # 生成的数据集落盘处（按文件名复用）
 ├── results/          # evalscope 输出: results/<场景ID>/<时间戳>/<model>/
-└── logs/             # run.sh 后台运行日志
+└── logs/             # run.sh / Web 运行日志
 ```
+
+## Web 控制台（三视图）
+
+```bash
+python3 webapp.py --port 8300     # 启动后浏览器打开 http://<主机IP>:8300
+```
+
+左侧三个视图：
+
+1. **⚙️ 配置项** —— 前端配置服务 URL / 模型名 / tokenizer、**Host 头开关**、
+   摸高参数、以及测试场景的启停/增删（保存到 `web_state.json`，不覆盖
+   `config.yaml` 的注释）
+2. **📊 测试详情** —— 每个场景的状态（已完成 / 进行中 / 排队 / 未开始），
+   一键运行已启用/未完成场景；点“查看结果”可打开该场景的**性能结果表**
+   （各并发 TTFT/TPOT/吞吐/成功率）和**日志路径**（运行日志 + 分并发日志）
+3. **🗂️ 数据集详情** —— 按场景列出 gsm8k 数据集（相同「输入长度 + 命中率」
+   **自动复用同一文件**），可逐数据集配置**生成条数**，支持**一键生成全部
+   数据集**与强制重新生成
+
+命令行入口（`run.sh` / `report.py`）与 Web 共用 `config.yaml`，两者可混用。
 
 ## 快速开始（目标主机上）
 
