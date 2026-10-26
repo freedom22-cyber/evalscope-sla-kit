@@ -344,12 +344,24 @@ async function openTask(id) {
   const d = await api('/api/tasks/'+id);
   $('#dlg-title').textContent = '场景 '+id;
   const body = $('#dlg-body'); body.innerHTML = '';
-  body.append(el('div', {html:`<div class="kv">
-    <div class="k">状态</div><div class="v">${pill(d.task.status||'not_started')}</div>
-    <div class="k">结果目录</div><div class="v"><code>${d.result_dir||'-'}</code></div>
-    <div class="k">汇总文件</div><div class="v">${d.summary_path?('<code>'+d.summary_path+'</code>'):'<span class="muted">尚未生成</span>'}</div>
-    <div class="k">运行日志</div><div class="v">${d.task.log_path?('<code>'+d.task.log_path+'</code> <button class="small" onclick="showLog(\\''+d.task.log_path+'\\')">查看</button>'):'<span class="muted">-</span>'}</div>
-  </div>`}));
+
+  // 基本信息
+  const kv = el('div', {cls:'kv'});
+  kv.append(el('div', {cls:'k'}, '状态'), el('div', {cls:'v', html: pill(d.task.status||'not_started')}));
+  kv.append(el('div', {cls:'k'}, '结果目录'), el('div', {cls:'v', html: '<code>'+(d.result_dir||'-')+'</code>'}));
+  kv.append(el('div', {cls:'k'}, '汇总文件'),
+    el('div', {cls:'v', html: d.summary_path ? ('<code>'+d.summary_path+'</code>') : '<span class="muted">尚未生成</span>'}));
+  const logDiv = el('div', {cls:'v'});
+  if (d.task.log_path) {
+    logDiv.innerHTML = '<code>'+d.task.log_path+'</code> ';
+    const logBtn = el('button', {cls:'small'}, '查看');
+    logBtn.onclick = () => showLog(d.task.log_path);
+    logDiv.append(logBtn);
+  } else {
+    logDiv.innerHTML = '<span class="muted">-</span>';
+  }
+  kv.append(el('div', {cls:'k'}, '运行日志'), logDiv);
+  body.append(kv);
 
   // 性能结果表
   body.append(el('h3', {style:'font-size:13px'}, '性能结果（各并发达标情况）'));
@@ -374,8 +386,14 @@ async function openTask(id) {
   }
   if (d.per_concurrency_logs && d.per_concurrency_logs.length) {
     body.append(el('h3', {style:'font-size:13px;margin-top:16px'}, '分并发日志'));
-    d.per_concurrency_logs.forEach(p => body.append(el('div', {html:
-      `<code>${p}</code> <button class="small" onclick="showLog('${p}')">查看</button>`})));
+    d.per_concurrency_logs.forEach(p => {
+      const row = el('div');
+      row.innerHTML = '<code>'+p+'</code> ';
+      const btn = el('button', {cls:'small'}, '查看');
+      btn.onclick = () => showLog(p);
+      row.append(btn);
+      body.append(row);
+    });
   }
   $('#dlg').showModal();
 }
