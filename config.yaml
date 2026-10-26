@@ -1,0 +1,110 @@
+# ============================================================================
+# evalscope 摸高测试配置
+# ----------------------------------------------------------------------------
+# 使用方法:
+#   1. 修改 service 段为被测服务地址/模型名/tokenizer 路径
+#   2. 在 scenarios 段中注释/取消注释行来选择要跑的场景
+#   3. bash run.sh            # 顺序跑所有启用场景（nohup 后台）
+#      bash run.sh --dry-run  # 只打印命令不执行
+#      python3 report.py      # 跑完后汇总所有场景结果为一张表
+# ============================================================================
+
+service:
+  # 被测服务 OpenAI 兼容端点（chat completions 完整路径）
+  url: http://192.168.0.120:9826/v1/chat/completions
+  # 服务端 served model 名（必须与服务配置一致，否则 404/模型不存在）
+  model: glm
+  # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
+  tokenizer_path: /data/models/GLM-5.3-W8A8C8
+
+request:
+  # 是否在请求头中加 Host 参数（经过 LB/代理/网关按域名路由时需要）
+  add_host_header: false
+  # Host 头的值；留空 "" 表示自动取 url 中的主机名
+  host_header: ""
+  # 额外自定义请求头（可选），每行一个 "Key=Value"
+  extra_headers: []
+  #  - "Authorization=Bearer xxx"
+  # API key（可选，设置后自动加 Authorization: Bearer <api_key>）
+  api_key: ""
+
+benchmark:
+  # 摸高并发搜索区间 [lower, upper]
+  sla_lower_bound: 1
+  sla_upper_bound: 512
+  # 每个候选并发跑几轮取平均
+  sla_num_runs: 2
+  # 每个候选并发的请求数 = 并发数 x number_multiplier
+  number_multiplier: 2
+  # 正式测试前的 warmup 请求数
+  warmup_num: 10
+  # 数据集生成 worker 进程数（0 = 按 CPU 自动；内存受限的客户端机器建议 1）
+  num_workers: 0
+  # 请求采样参数（原样透传给 evalscope --extra-args 的 JSON）
+  # ignore_eos=true: 输出固定到 max_tokens，TPOT/吞吐才可比
+  # thinking 模型必须带 chat_template_kwargs.thinking=false，否则思考 token
+  # 拉高 TPOT 失真；非思考模型删掉 chat_template_kwargs 段即可
+  extra_args:
+    ignore_eos: true
+    chat_template_kwargs:
+      thinking: false
+
+dataset:
+  # gsm8k 数据集生成参数（tools/gen_dataset_only.py）
+  # 每种 (input_len, repeat_rate) 组合只生成一次，之后按文件名复用
+  gsm8k_number: 1000        # 每个数据集的样本条数
+  gsm8k_prefix_num: 1       # 前缀种类数（场景固定为 1）
+  gsm8k_seed: 0             # 随机种子
+  gsm8k_dp: 1               # DP 域数
+  force_regenerate: false   # true = 文件名相同也强制重新生成
+
+# ============================================================================
+# 测试场景（固定清单，按需注释/取消注释）
+# ----------------------------------------------------------------------------
+# 每行一个场景，格式（逗号分隔，顺序固定）:
+#   "dataset, input_len, output_len, cache_hit_rate, prefix_num, ttft_sla_ms, tpot_sla_ms"
+#
+#   dataset        : random | gsm8k
+#   input_len      : 输入 token 数（k 简写 = x1024，如 1k=1024, 1000k=1024000）
+#   output_len     : 输出 token 数（同上）
+#   cache_hit_rate : 缓存命中率（random 固定 0；gsm8k: 0 / 0.3 / 0.9）
+#   prefix_num     : 前缀数量（固定 1）
+#   ttft_sla_ms    : avg TTFT SLA 上限（毫秒）
+#   tpot_sla_ms    : avg TPOT SLA 上限（毫秒）
+#
+# 注意:
+#   - random 数据集由 evalscope 在线生成（0% 缓存命中，跨轮自动偏移防命中）
+#   - gsm8k 数据集由 run.sh 自动生成+转格式（需要 tokenizer 与 torch/transformers）
+#   - 注释行 = 跳过该场景；取消注释 = 启用
+# ============================================================================
+scenarios:
+  # ---- random：短中长输入，TTFT<=10s / TPOT<=50ms ----
+  - "random, 1k, 1k, 0, 1, 10000, 50"
+  - "random, 1k, 8k, 0, 1, 10000, 50"
+  - "random, 8k, 1k, 0, 1, 10000, 50"
+  # ---- random：超长输出，TTFT<=3s / TPOT<=50ms ----
+  - "random, 1k, 32k, 0, 1, 3000, 50"
+  - "random, 1k, 64k, 0, 1, 3000, 50"
+  # ---- gsm8k 0% 缓存命中，TTFT<=60s / TPOT<=50ms ----
+  - "gsm8k, 16k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 32k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 64k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 75k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 128k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 256k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 512k, 1k, 0, 1, 60000, 50"
+  - "gsm8k, 1000k, 1k, 0, 1, 60000, 50"
+  # ---- gsm8k 30% 缓存命中，TTFT<=30s / TPOT<=50ms ----
+  - "gsm8k, 64k, 1k, 0.3, 1, 30000, 50"
+  - "gsm8k, 75k, 1k, 0.3, 1, 30000, 50"
+  - "gsm8k, 128k, 1k, 0.3, 1, 30000, 50"
+  - "gsm8k, 256k, 1k, 0.3, 1, 30000, 50"
+  - "gsm8k, 512k, 1k, 0.3, 1, 30000, 50"
+  - "gsm8k, 1000k, 1k, 0.3, 1, 30000, 50"
+  # ---- gsm8k 90% 缓存命中，TTFT<=10s / TPOT<=50ms ----
+  - "gsm8k, 64k, 1k, 0.9, 1, 10000, 50"
+  - "gsm8k, 75k, 1k, 0.9, 1, 10000, 50"
+  - "gsm8k, 128k, 1k, 0.9, 1, 10000, 50"
+  - "gsm8k, 256k, 1k, 0.9, 1, 10000, 50"
+  - "gsm8k, 512k, 1k, 0.9, 1, 10000, 50"
+  - "gsm8k, 1000k, 1k, 0.9, 1, 10000, 50"

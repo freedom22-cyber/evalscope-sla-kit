@@ -1,0 +1,31 @@
+service:
+  url: http://127.0.0.1:8901/v1/chat/completions
+  model: mock-model
+  tokenizer_path: C:/Users/Administrator/Desktop/work/project/九坤/evalscope_sla_kit/tests/qwen_tokenizer
+
+request:
+  add_host_header: true
+  host_header: "my-vip.example.com"
+  extra_headers: []
+  api_key: ""
+
+benchmark:
+  sla_lower_bound: 1
+  sla_upper_bound: 8
+  sla_num_runs: 1
+  number_multiplier: 2
+  warmup_num: 2
+  num_workers: 1
+  extra_args:
+    ignore_eos: true
+
+dataset:
+  gsm8k_number: 8
+  gsm8k_prefix_num: 1
+  gsm8k_seed: 0
+  gsm8k_dp: 1
+  force_regenerate: false
+
+scenarios:
+  - "random, 1k, 64, 0, 1, 10000, 50"
+  - "gsm8k, 1k, 64, 0.3, 1, 30000, 50"

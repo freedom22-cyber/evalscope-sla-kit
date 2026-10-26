@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Results & logs (generated at runtime)
+results/
+logs/
+datasets/
+
+# Test artifacts
+tests/qwen_tokenizer/
+tests/stubs/
+tests/out_direct/
+tests/mock_seen_headers.log
+tests/datasets_smoke/
+
+# Misc
+*.db
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
