@@ -20,6 +20,7 @@ tests/datasets_smoke/
 # Misc
 *.db
 *.log
+web_state.json
 .DS_Store
 .idea/
 .vscode/

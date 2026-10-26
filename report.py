@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 """汇总所有场景的 evalscope 摸高结果，输出并发-指标总表 + 每场景最大达标并发。
 
+含 SLA 判定（失败请求零容忍: Failed==0 且 TTFT/TPOT 双达标 -> PASS），
+判据取自 config.yaml 对应场景行; config 不可用时优雅降级为不打印判定列。
+
 用法:
     python3 report.py                     # 汇总 results/ 下全部场景
     python3 report.py --npu 16            # 按卡数折算单卡吞吐列
@@ -19,12 +22,36 @@ import time
 
 KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(KIT_ROOT, "results")
+sys.path.insert(0, KIT_ROOT)
+
+# SLA 判据表 {场景ID: (ttft_sla_ms, tpot_sla_ms)}，从 config.yaml 场景行解析;
+# config 缺失/不可用时 SLA_MAP 为空，报告优雅降级（不打印判定列）。
+# 兜底 SystemExit: runner.py 缺 pyyaml 时 import 阶段就会 sys.exit
+try:
+    from runner import parse_scenario, scenario_id
+
+    import yaml
+    with open(os.path.join(KIT_ROOT, "config.yaml"), encoding="utf-8") as f:
+        _cfg = yaml.safe_load(f) or {}
+    SLA_MAP = {}
+    for _line in _cfg.get("scenarios") or []:
+        _line = str(_line).strip()
+        if not _line or _line.startswith("#"):
+            continue
+        try:
+            _sc = parse_scenario(_line)
+            SLA_MAP[scenario_id(_sc)] = (_sc["ttft_sla_ms"], _sc["tpot_sla_ms"])
+        except (TypeError, ValueError):
+            continue
+except (Exception, SystemExit):
+    SLA_MAP = {}
 
 # evalscope 指标键名（perf_constants.py 中的标准名）
 K_TTFT = "Avg TTFT (ms)"
 K_TPOT = "Avg TPOT (ms)"
 K_LAT = "Avg Latency (s)"
 K_OK = "Success Requests"
+K_FAIL = "Failed Requests"
 K_TOTAL = "Total Requests"
 K_OUT_TPS = "Output Throughput (tok/s)"
 K_TOTAL_TPS = "Total Throughput (tok/s)"
@@ -65,6 +92,18 @@ def fmt(v, nd=1):
         return str(v)
 
 
+def sla_verdict(m: dict, lims: tuple) -> str:
+    """失败请求零容忍: Failed==0 且 avg TTFT/TPOT 双达标 -> PASS, 否则 FAIL"""
+    try:
+        ttft, tpot = m.get(K_TTFT), m.get(K_TPOT)
+        ok = ((m.get(K_FAIL) or 0) == 0
+              and ttft is not None and tpot is not None
+              and float(ttft) <= lims[0] and float(tpot) <= lims[1])
+        return "PASS" if ok else "FAIL"
+    except (TypeError, ValueError):
+        return "FAIL"
+
+
 def main():
     ap = argparse.ArgumentParser(description="evalscope 摸高结果汇总")
     ap.add_argument("--npu", type=int, default=0,
@@ -98,22 +137,29 @@ def main():
 
         print(f"\n### {sid}")
         print(f"    来源: {path}")
+        lims = SLA_MAP.get(sid)  # 该场景的 (ttft_sla_ms, tpot_sla_ms), 不在 config 则 None
         header = (f"    {'并发':>6} {'TTFT(ms)':>10} {'TPOT(ms)':>9} {'延迟(s)':>8} "
                   f"{'成功/总':>10} {'输出tok/s':>10} {'总tok/s':>10}")
         if args.npu:
             header += f" {'单卡出tok/s':>11} {'单卡总tok/s':>11}"
+        if lims:
+            header += f" {'判定':>6}"
         print(header)
         md_lines.append(f"\n## {sid}\n")
         md_header = "| 并发 | TTFT(ms) | TPOT(ms) | 延迟(s) | 成功/总 | 输出吞吐(tok/s) | 总吞吐(tok/s) |"
         if args.npu:
             md_header += " 单卡输出(tok/s) | 单卡总(tok/s) |"
+        if lims:
+            md_header += " 判定 |"
         md_lines.append(md_header)
-        md_lines.append("|---|---|---|---|---|---|---|" + ("---|---|" if args.npu else ""))
+        md_lines.append("|---|---|---|---|---|---|---|" + ("---|---|" if args.npu else "")
+                        + ("---|" if lims else ""))
 
         for par in sorted(rows):
             m = rows[par]
             ok = m.get(K_OK) or 0
             total = m.get(K_TOTAL) or 0
+            verdict = sla_verdict(m, lims) if lims else None
             line = (f"    {par:>6} {fmt(m.get(K_TTFT), 0):>10} {fmt(m.get(K_TPOT), 2):>9} "
                     f"{fmt(m.get(K_LAT), 1):>8} {f'{ok:.0f}/{total:.0f}':>10} "
                     f"{fmt(m.get(K_OUT_TPS), 1):>10} {fmt(m.get(K_TOTAL_TPS), 1):>10}")
@@ -125,9 +171,23 @@ def main():
                          f"{fmt((m.get(K_TOTAL_TPS) or 0) / args.npu, 1):>11}")
                 md_row += (f" {fmt((m.get(K_OUT_TPS) or 0) / args.npu, 1)} | "
                            f"{fmt((m.get(K_TOTAL_TPS) or 0) / args.npu, 1)} |")
+            if lims:
+                line += f" {verdict:>6}"
+                md_row += f" {verdict} |"
             print(line)
             md_lines.append(md_row)
             summary_rows.append((sid, par, m))
+
+        # SLA 结论: 最大达标并发（失败请求零容忍口径, 与 runner.py partial 判定一致）
+        if lims:
+            passing = [par for par in sorted(rows) if sla_verdict(rows[par], lims) == "PASS"]
+            concl = (f"SLA 判定: 最大达标并发 = {max(passing)}" if passing
+                     else "SLA 判定: 无达标档（Failed at lower bound）")
+        else:
+            concl = "SLA 判定: 跳过（config.yaml 无该场景或不可用）"
+        print(f"    {concl}")
+        md_lines.append("")
+        md_lines.append(concl)
 
         print(f"    （详细百分位见 {os.path.dirname(path)}）")
 
