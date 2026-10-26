@@ -209,11 +209,10 @@ async function renderCases() {
   const m = $('#main'); m.innerHTML = '';
   m.append(el('h1', {}, '测试用例'));
   m.append(el('div', {cls:'sub'},
-    '用例即一个固定测试场景；gsm8k 用例可设置数据集条数，「检测数据集是否生成」会补齐未生成的数据集（相同长度/命中率自动复用）'));
+    '用例即一个固定测试场景；数据集条数在添加用例时固化（要改条数请新增用例）；「检测数据集是否生成」仅刷新状态列，生成需逐用例点击「生成」'));
 
   const bar = el('div', {cls:'toolbar'});
   bar.append(el('button', {cls:'primary', onclick: detectDatasets}, '🔍 检测数据集是否生成'));
-  bar.append(el('button', {cls:'danger', onclick: () => genDatasets(true)}, '♻️ 强制重新生成未生成集'));
   bar.append(el('span', {cls:'spacer'}));
   bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderCases()}}, '刷新')));
   m.append(bar);
@@ -229,8 +228,8 @@ async function renderCases() {
     const tr = el('tr');
     tr.dataset.id = c.id;
     const dsCell = (c.dataset === 'gsm8k')
-      ? '<input type="number" class="dsnum" style="width:78px" value="' + (c.dataset_num||'') + '" placeholder="默认"> '
-        + '<button class="small" data-gen="' + c.id + '">生成</button>'
+      ? ((c.dataset_num||'默认') + ' '
+        + '<button class="small" data-gen="' + c.id + '">' + (c.dataset_exists ? '重新生成' : '生成') + '</button>')
       : '<span class="muted">—</span>';
     const stCell = (c.dataset === 'gsm8k')
       ? (c.dataset_exists
@@ -280,9 +279,7 @@ async function saveCases() {
   const rows = document.querySelectorAll('tbody tr[data-id]');
   const payload = {cases: []};
   rows.forEach(tr => {
-    const numInp = tr.querySelector('.dsnum');
-    payload.cases.push({id: tr.dataset.id, enabled: tr.querySelector('.en').checked,
-                        dataset_num: numInp ? numInp.value : null});
+    payload.cases.push({id: tr.dataset.id, enabled: tr.querySelector('.en').checked});
   });
   const r = await api('/api/cases', {method:'POST', body: JSON.stringify(payload)});
   toast(r.ok ? '用例已保存' : ('保存失败: ' + (r.error||'')));
@@ -307,14 +304,12 @@ async function genCase(id) {
   setTimeout(renderCases, 1500);
 }
 async function detectDatasets() {
-  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({})});
-  toast('已检测：' + (r.count||0) + ' 个未生成的数据集开始生成');
-  setTimeout(renderCases, 1500);
+  await api('/api/cases');   // 触发后端重算数据集状态
+  renderCases();
+  toast('数据集状态已刷新');
 }
-async function genDatasets(force) {
-  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({force})});
-  toast((force?'强制重新生成 ':'生成 ') + (r.count||0) + ' 个数据集');
-  setTimeout(renderCases, 1500);
+async function genDatasets() {
+  // 兼容旧引用：不再提供“强制重新生成全部”
 }
 
 /* 用例表内的「生成」「删除」用事件委托 */
@@ -366,12 +361,38 @@ async function renderProjects() {
 
 async function newProject() {
   const {cases} = await api('/api/cases');
-  const nEn = cases.filter(c => c.enabled !== false).length;
-  const name = prompt('测试工程名称（默认纳入 ' + nEn + ' 个启用用例）：', '工程' + new Date().toLocaleTimeString());
-  if (name === null) return;
-  const r = await api('/api/projects', {method:'POST', body: JSON.stringify({name})});
-  if (r.ok) { toast('已创建工程'); renderProjects(); }
-  else toast('创建失败: ' + (r.error||''));
+  const dlg = $('#dlg');
+  $('#dlg-title').textContent = '新建测试工程';
+  const body = $('#dlg-body'); body.innerHTML = '';
+
+  body.append(el('div', {cls:'field'}, el('label', {}, '工程名称')));
+  const nameInp = el('input', {type:'text', id:'np-name', style:'width:100%'});
+  body.append(nameInp);
+
+  body.append(el('h3', {style:'font-size:13px;margin:14px 0 8px'}, '选择要执行的测试用例'));
+  const list = el('div', {style:'max-height:340px;overflow:auto;border:1px solid #e4e7ec;border-radius:8px;padding:8px'});
+  cases.forEach(c => {
+    const row = el('label', {style:'display:flex;gap:8px;align-items:center;padding:4px 6px;cursor:pointer'});
+    row.append(el('input', {type:'checkbox', value:c.id, checked:c.enabled!==false}));
+    row.append(el('span', {style:'font-size:12.5px'},
+      c.id + '  (' + c.dataset + ' ' + kfmt(c.input_len) + '→' + kfmt(c.output_len) + ' 命中' + hitfmt(c.hit_rate) + ')'));
+    list.append(row);
+  });
+  body.append(list);
+
+  const ops = el('div', {cls:'row-actions', style:'margin-top:14px'});
+  ops.append(el('button', {cls:'primary', onclick: async () => {
+    const name = nameInp.value.trim() || ('工程' + new Date().toLocaleTimeString());
+    const ids = [...list.querySelectorAll('input:checked')].map(x => x.value);
+    if (!ids.length) { toast('请至少勾选一个用例'); return; }
+    const r = await api('/api/projects', {method:'POST', body: JSON.stringify({name, case_ids: ids})});
+    dlg.close();
+    if (r.ok) { toast('已创建工程（' + ids.length + ' 个用例）'); renderProjects(); }
+    else toast('创建失败: ' + (r.error||''));
+  }}, '创建'));
+  ops.append(el('button', {onclick:()=>dlg.close()}, '取消'));
+  body.append(ops);
+  dlg.showModal();
 }
 async function delProject(id) {
   if (!confirm('删除该测试工程？（不影响已生成的结果）')) return;

@@ -4,10 +4,11 @@
 
 三视图：
   1. 配置项   —— url / model / tokenizer / Host 头开关 / 摸高参数
-  2. 测试用例 —— 用例列表（增删启停）、每个用例设置数据集条数、
-                 「检测数据集是否生成」开关（自动补齐未生成的数据集）、
+  2. 测试用例 —— 用例列表（增删启停）、数据集条数在添加用例时固化
+                 （已有用例不可改条数，要改就新增用例）、
+                 「检测数据集是否生成」仅刷新状态列（生成由用户逐用例点击）、
                  自定义添加要测试的用例
-  3. 测试工程 —— 工程列表（新建/删除），工程内可启动/终止测试任务；
+  3. 测试工程 —— 新建时可勾选要执行的用例；工程内可启动/终止测试任务；
                  打开工程查看其用例，每个用例查看性能结果与日志路径
 
 数据模型（落盘 web_state.json，不覆盖 config.yaml 注释）:
@@ -338,9 +339,10 @@ def api_cases():
 
 @app.post("/api/cases")
 def api_set_cases(payload: dict = Body(...)):
-    """整体替换用例列表（增删改都由前端提交完整列表）。
+    """整体替换用例列表（启停由前端提交完整列表）。
 
-    允许条目只含 {id, enabled, dataset_num}：缺 raw 时按 id 从现有用例补齐。
+    数据集条数在添加用例时固化：此处忽略 dataset_num 字段，
+    保留用例已有的条数（要改条数 = 新增一个用例）。
     """
     st = load_state()
     raw_cases = payload.get("cases")
@@ -360,13 +362,6 @@ def api_set_cases(payload: dict = Body(...)):
                 c = case_from_raw(raw, cid=rc.get("id"))
             except Exception as e:
                 return JSONResponse({"ok": False, "error": f"用例格式错误: {raw} ({e})"}, status_code=400)
-        if rc.get("dataset_num") not in (None, ""):
-            try:
-                c["dataset_num"] = int(rc["dataset_num"])
-            except (TypeError, ValueError):
-                c["dataset_num"] = None
-        else:
-            c["dataset_num"] = None
         c["enabled"] = bool(rc.get("enabled", True))
         parsed.append(c)
     save_cases(st, parsed)
