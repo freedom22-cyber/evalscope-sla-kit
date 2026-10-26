@@ -9,8 +9,6 @@
   body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
          background: #f5f6f8; color: #1f2430; font-size: 14px; }
   .app { display: flex; min-height: 100vh; }
-
-  /* 左侧导航 */
   .sidebar { width: 220px; flex: 0 0 220px; background: #1f2430; color: #c8ccd4;
              display: flex; flex-direction: column; }
   .brand { padding: 18px 20px; font-size: 15px; font-weight: 600; color: #fff;
@@ -23,8 +21,6 @@
   .nav a.active { background: #2b3442; color: #fff; border-left-color: #4c8dff; }
   .nav .badge { background: #3a4454; border-radius: 10px; padding: 1px 8px; font-size: 11px; margin-left: auto; }
   .sidebar .foot { padding: 14px 20px; font-size: 11px; color: #6b7382; border-top: 1px solid #2c333f; }
-
-  /* 主区 */
   .main { flex: 1; padding: 22px 28px; overflow: auto; }
   h1 { font-size: 19px; margin: 0 0 4px; }
   .sub { color: #6b7382; margin-bottom: 18px; font-size: 12px; }
@@ -34,9 +30,9 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
   .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
   .field label { font-size: 12px; color: #475467; font-weight: 500; }
-  .field input[type=text], .field input[type=number] {
+  .field input[type=text], .field input[type=number], .field select {
       padding: 7px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; outline: none; }
-  .field input:focus { border-color: #4c8dff; box-shadow: 0 0 0 3px rgba(76,141,255,.12); }
+  .field input:focus, .field select:focus { border-color: #4c8dff; box-shadow: 0 0 0 3px rgba(76,141,255,.12); }
   .field .hint { font-size: 11px; color: #98a2b3; }
   .switch { display: flex; align-items: center; gap: 8px; }
   .switch input { width: 16px; height: 16px; }
@@ -47,9 +43,7 @@
   button.primary:hover { background: #325fc7; }
   button.danger { color: #b42318; border-color: #fecdca; }
   button.small { padding: 4px 10px; font-size: 12px; }
-  .row-actions { margin-top: 6px; display: flex; gap: 10px; }
-
-  /* 场景表 */
+  .row-actions { margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef0f3; }
   th { color: #667085; font-weight: 600; background: #fafbfc; }
@@ -71,14 +65,21 @@
   .toolbar .spacer { flex: 1; }
   pre.log { background: #0f1420; color: #cdd6e4; padding: 14px; border-radius: 8px; max-height: 420px;
             overflow: auto; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
-  dialog { border: none; border-radius: 12px; padding: 0; width: min(900px, 92vw); max-height: 88vh; }
+  dialog { border: none; border-radius: 12px; padding: 0; width: min(940px, 94vw); max-height: 90vh; }
   dialog::backdrop { background: rgba(16,24,40,.45); }
-  .dlg-head { padding: 16px 20px; border-bottom: 1px solid #eef0f3; display: flex; align-items: center; }
+  .dlg-head { padding: 16px 20px; border-bottom: 1px solid #eef0f3; display: flex; align-items: center; gap: 10px; }
   .dlg-head h3 { margin: 0; font-size: 15px; flex: 1; }
-  .dlg-body { padding: 18px 20px; overflow: auto; max-height: 70vh; }
+  .dlg-body { padding: 18px 20px; overflow: auto; max-height: 74vh; }
   .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 12.5px; margin-bottom: 14px; }
   .kv .k { color: #667085; }
   .kv .v { color: #1f2430; word-break: break-all; }
+  .proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+  .proj-card { border: 1px solid #e4e7ec; border-radius: 10px; padding: 16px; background: #fff; }
+  .proj-card h3 { margin: 0 0 6px; font-size: 14px; }
+  .proj-card .meta { font-size: 12px; color: #667085; margin-bottom: 10px; }
+  .proj-card .bar { height: 6px; border-radius: 3px; background: #eef0f3; overflow: hidden; margin: 8px 0; }
+  .proj-card .bar > div { height: 100%; background: #3b6fe0; }
+  .back { font-size: 13px; color: #3b6fe0; cursor: pointer; margin-bottom: 12px; display: inline-block; }
 </style>
 </head>
 <body>
@@ -87,8 +88,8 @@
     <div class="brand">evalscope 摸高测试<small>SLA Peak Search Console</small></div>
     <nav class="nav" id="nav">
       <a data-view="config" class="active">⚙️ 配置项</a>
-      <a data-view="tasks">📊 测试详情 <span class="badge" id="badge-tasks">-</span></a>
-      <a data-view="datasets">🗂️ 数据集详情 <span class="badge" id="badge-datasets">-</span></a>
+      <a data-view="cases">🧪 测试用例 <span class="badge" id="badge-cases">-</span></a>
+      <a data-view="projects">📦 测试工程 <span class="badge" id="badge-projects">-</span></a>
     </nav>
     <div class="foot">后端: FastAPI · 端口 8300</div>
   </aside>
@@ -103,32 +104,37 @@
 const $ = (s, r=document) => r.querySelector(s);
 const el = (t, a={}, ...kids) => {
   const e = document.createElement(t);
-  for (const k in a) { if (k === 'html') e.innerHTML = a[k]; else if (k==='cls') e.className=a[k];
-    else if (k.startsWith('on')) e.addEventListener(k.slice(2), a[k]); else e.setAttribute(k, a[k]); }
+  for (const k in a) {
+    if (k === 'html') e.innerHTML = a[k];
+    else if (k === 'cls') e.className = a[k];
+    else if (k === 'style') e.setAttribute('style', a[k]);
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), a[k]);
+    else e.setAttribute(k, a[k]);
+  }
   for (const k of kids) e.append(k);
   return e;
 };
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 2200); }
+  setTimeout(()=>t.classList.remove('show'), 2600); }
 async function api(path, opts={}) {
   const r = await fetch(path, { headers: {'Content-Type':'application/json'}, ...opts });
   return await r.json();
 }
 const STATUS_CN = { done:'已完成', running:'进行中', pending:'排队中', error:'失败',
   not_started:'未开始', stopped:'已停止', interrupted:'已中断' };
-function pill(s) { return `<span class="pill ${s}">${STATUS_CN[s] || s}</span>`; }
+function pill(s) { return '<span class="pill ' + (s||'not_started') + '">' + (STATUS_CN[s]||s||'未开始') + '</span>'; }
 const kfmt = n => (n && n % 1024 === 0) ? (n/1024)+'k' : n;
 const hitfmt = h => (h===0||h==null) ? '0%' : (h*100).toFixed(0)+'%';
 
 let VIEW = 'config';
+let CURRENT_PROJECT = null;   // 打开中的工程 id
 
 /* ============================ 配置项视图 ============================ */
 async function renderConfig() {
   const cfg = await api('/api/config');
-  const sc = await api('/api/scenarios');
   const m = $('#main'); m.innerHTML = '';
   m.append(el('h1', {}, '配置项'));
-  m.append(el('div', {cls:'sub'}, '配置被测服务与测试场景；保存后写入 web_state.json（不覆盖 config.yaml 注释）'));
+  m.append(el('div', {cls:'sub'}, '配置被测服务与摸高参数；保存后写入 web_state.json（不覆盖 config.yaml 注释）'));
 
   const svc = cfg.service||{}, req = cfg.request||{}, bench = cfg.benchmark||{};
   const card = el('div', {cls:'card'});
@@ -143,15 +149,15 @@ async function renderConfig() {
   card.append(el('h2', {style:'margin-top:18px'}, '🌐 请求头 / Host'));
   const hg = el('div', {cls:'grid2'});
   const hostChk = el('div', {cls:'field'});
-  hostChk.innerHTML = `<label>请求头加 Host 参数</label>
-    <div class="switch"><input type="checkbox" id="addhost" ${req.add_host_header?'checked':''}>
-    <span class="hint">LB/网关按域名路由时开启</span></div>`;
+  hostChk.innerHTML = '<label>请求头加 Host 参数</label>'
+    + '<div class="switch"><input type="checkbox" id="addhost" ' + (req.add_host_header?'checked':'') + '>'
+    + '<span class="hint">LB/网关按域名路由时开启</span></div>';
   hg.append(hostChk);
   hg.append(field('Host 值', 'host_header', req.host_header||'', '留空 = 自动取 URL 主机名'));
   hg.append(field('额外请求头', 'extra_headers', (req.extra_headers||[]).join(', '), '逗号分隔，如 Authorization=Bearer xxx'));
   card.append(hg);
-  const eff = el('div', {cls:'hint', style:'margin-top:6px'}, '生效请求头: ' + (cfg.host_header_effective||[]).join(' | ') );
-  card.append(eff);
+  card.append(el('div', {cls:'hint', style:'margin-top:6px'},
+    '生效请求头: ' + ((cfg.host_header_effective||[]).join(' | ') || '（无）')));
 
   card.append(el('h2', {style:'margin-top:18px'}, '🎯 摸高参数'));
   const bg = el('div', {cls:'grid2'});
@@ -164,58 +170,17 @@ async function renderConfig() {
   card.append(bg);
 
   const actions = el('div', {cls:'row-actions'});
-  actions.append(el('button', {cls:'primary', onclick: () => saveConfig()}, '💾 保存服务配置'));
+  actions.append(el('button', {cls:'primary', onclick: saveConfig}, '💾 保存服务配置'));
   actions.append(el('button', {onclick: renderConfig}, '重置'));
   card.append(actions);
   m.append(card);
-
-  /* 场景表 */
-  const scCard = el('div', {cls:'card'});
-  scCard.append(el('h2', {}, '📋 测试场景（启停 / 增删）'));
-  const tb = el('table');
-  tb.innerHTML = `<thead><tr><th>启用</th><th>场景 ID</th><th>数据集</th><th>输入</th>
-    <th>输出</th><th>缓存命中</th><th>TTFT SLA</th><th>TPOT SLA</th><th>操作</th></tr></thead>`;
-  const tbody = el('tbody');
-  (sc.scenarios||[]).forEach(s => {
-    if (!s.id) return;
-    const tr = el('tr');
-    tr.innerHTML = `
-      <td><input type="checkbox" class="en" data-id="${s.id}" ${s.enabled?'checked':''}></td>
-      <td><code>${s.id}</code></td>
-      <td>${s.dataset}</td>
-      <td>${kfmt(s.input_len)}</td>
-      <td>${kfmt(s.output_len)}</td>
-      <td>${hitfmt(s.hit_rate)}</td>
-      <td>${s.ttft_sla_ms} ms</td>
-      <td>${s.tpot_sla_ms} ms</td>
-      <td><button class="small danger" data-del="${s.id}">删除</button></td>`;
-    tbody.append(tr);
-  });
-  tb.append(tbody);
-  scCard.append(tb);
-  scCard.append(el('div', {html:`
-    <h2 style="margin-top:18px">➕ 添加场景</h2>
-    <div class="grid2">
-      <div class="field"><label>数据集</label><select id="ns-dataset">
-        <option value="random">random</option><option value="gsm8k">gsm8k</option></select></div>
-      <div class="field"><label>输入长度</label><input type="text" id="ns-in" placeholder="如 1k / 64k / 1000k"></div>
-      <div class="field"><label>输出长度</label><input type="text" id="ns-out" placeholder="如 1k"></div>
-      <div class="field"><label>缓存命中率</label><input type="text" id="ns-hit" placeholder="0 / 0.3 / 0.9"></div>
-      <div class="field"><label>前缀数量</label><input type="number" id="ns-pnum" value="1"></div>
-      <div class="field"><label>TTFT SLA (ms)</label><input type="number" id="ns-ttft" value="10000"></div>
-      <div class="field"><label>TPOT SLA (ms)</label><input type="number" id="ns-tpot" value="50"></div>
-    </div>
-    <div class="row-actions"><button class="primary" onclick="addScenario()">添加</button></div>`}));
-  scCard.append(el('div', {cls:'row-actions', style:'margin-top:14px'},
-    el('button', {cls:'primary', onclick: () => saveScenarios()}, '💾 保存场景启停/删除')));
-  m.append(scCard);
 }
 
 function field(label, id, val, hint='', type='text') {
   const f = el('div', {cls:'field'});
-  f.innerHTML = `<label>${label}</label>
-    <input type="${type}" id="cfg-${id}" value="${val===undefined||val===null?'':val}">
-    ${hint?`<span class="hint">${hint}</span>`:''}`;
+  f.innerHTML = '<label>'+label+'</label>'
+    + '<input type="'+type+'" id="cfg-'+id+'" value="'+(val===undefined||val===null?'':val)+'">'
+    + (hint?('<span class="hint">'+hint+'</span>'):'');
   return f;
 }
 
@@ -231,156 +196,282 @@ async function saveConfig() {
                  sla_num_runs: +$('#cfg-sla_num_runs').value,
                  number_multiplier: +$('#cfg-number_multiplier').value,
                  warmup_num: +$('#cfg-warmup_num').value,
-                 num_workers: +$('#cfg-num_workers').value },
+                 num_workers: +$('#cfg-num_workers').value }
   };
   const r = await api('/api/config', {method:'POST', body: JSON.stringify(payload)});
   toast(r.ok ? '服务配置已保存' : '保存失败');
   renderConfig();
 }
 
-async function saveScenarios() {
-  const disabled = [];
-  document.querySelectorAll('.en').forEach(c => { if (!c.checked) disabled.push(c.dataset.id); });
-  await api('/api/scenarios', {method:'POST', body: JSON.stringify({disabled})});
-  toast('场景启停已保存');
-  renderConfig();
-}
-
-async function addScenario() {
-  const line = [$('#ns-dataset').value, $('#ns-in').value, $('#ns-out').value,
-    $('#ns-hit').value||'0', $('#ns-pnum').value||'1', $('#ns-ttft').value, $('#ns-tpot').value].join(', ');
-  // 与现有场景合并：新场景追加到 config.yaml 列表
-  const cur = await api('/api/scenarios');
-  const lines = cur.scenarios.filter(s=>s.raw).map(s=>s.raw);
-  lines.push(line);
-  await api('/api/scenarios', {method:'POST', body: JSON.stringify({scenarios: lines})});
-  toast('场景已添加');
-  renderConfig();
-}
-
-/* 让"删除"按钮生效（事件委托） */
-document.addEventListener('click', async e => {
-  if (e.target.dataset && e.target.dataset.del) {
-    const id = e.target.dataset.del;
-    const cur = await api('/api/scenarios');
-    const lines = cur.scenarios.filter(s => s.id !== id && s.raw).map(s=>s.raw);
-    await api('/api/scenarios', {method:'POST', body: JSON.stringify({scenarios: lines})});
-    toast('场景已删除'); renderConfig();
-  }
-});
-
-/* ============================ 测试详情视图 ============================ */
-async function renderTasks() {
-  const {tasks} = await api('/api/tasks');
+/* ============================ 测试用例视图 ============================ */
+async function renderCases() {
+  const {cases} = await api('/api/cases');
   const m = $('#main'); m.innerHTML = '';
-  m.append(el('h1', {}, '测试详情'));
-  const done = tasks.filter(t=>t.status==='done').length;
-  const running = tasks.filter(t=>['running','pending'].includes(t.status)).length;
-  m.append(el('div', {cls:'sub'}, `共 ${tasks.length} 个场景 · 已完成 ${done} · 进行中/排队 ${running}`));
+  m.append(el('h1', {}, '测试用例'));
+  m.append(el('div', {cls:'sub'},
+    '用例即一个固定测试场景；gsm8k 用例可设置数据集条数，「检测数据集是否生成」会补齐未生成的数据集（相同长度/命中率自动复用）'));
 
   const bar = el('div', {cls:'toolbar'});
-  bar.append(el('button', {cls:'primary', onclick: runEnabled}, '▶ 运行已启用场景'));
-  bar.append(el('button', {onclick: runMissing}, '▶ 运行未完成场景'));
-  bar.append(el('button', {cls:'danger', onclick: stopAll}, '■ 停止'));
+  bar.append(el('button', {cls:'primary', onclick: detectDatasets}, '🔍 检测数据集是否生成'));
+  bar.append(el('button', {cls:'danger', onclick: () => genDatasets(true)}, '♻️ 强制重新生成未生成集'));
   bar.append(el('span', {cls:'spacer'}));
-  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(ev)=>{ev.preventDefault();renderTasks()}}, '刷新')));
+  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderCases()}}, '刷新')));
+  m.append(bar);
+
+  const card = el('div', {cls:'card'});
+  card.append(el('h2', {}, '📋 用例列表（' + cases.length + '）'));
+  const tb = el('table');
+  tb.innerHTML = '<thead><tr><th>启用</th><th>用例 ID</th><th>数据集</th><th>输入</th>'
+    + '<th>输出</th><th>命中</th><th>TTFT SLA</th><th>TPOT SLA</th>'
+    + '<th>数据集条数</th><th>数据集状态</th><th>操作</th></tr></thead>';
+  const tbody = el('tbody');
+  cases.forEach(c => {
+    const tr = el('tr');
+    tr.dataset.id = c.id;
+    const dsCell = (c.dataset === 'gsm8k')
+      ? '<input type="number" class="dsnum" style="width:78px" value="' + (c.dataset_num||'') + '" placeholder="默认"> '
+        + '<button class="small" data-gen="' + c.id + '">生成</button>'
+      : '<span class="muted">—</span>';
+    const stCell = (c.dataset === 'gsm8k')
+      ? (c.dataset_exists
+          ? '<span class="pill done">已生成</span>' + (c.dataset_shared?' <span class="muted">复用</span>':'')
+          : '<span class="pill not_started">未生成</span>')
+      : '<span class="muted">在线生成</span>';
+    tr.innerHTML =
+      '<td><input type="checkbox" class="en" ' + (c.enabled!==false?'checked':'') + '></td>'
+      + '<td><code>' + c.id + '</code></td>'
+      + '<td>' + c.dataset + '</td>'
+      + '<td>' + kfmt(c.input_len) + '</td>'
+      + '<td>' + kfmt(c.output_len) + '</td>'
+      + '<td>' + hitfmt(c.hit_rate) + '</td>'
+      + '<td>' + c.ttft_sla_ms + ' ms</td>'
+      + '<td>' + c.tpot_sla_ms + ' ms</td>'
+      + '<td>' + dsCell + '</td>'
+      + '<td>' + stCell + '</td>'
+      + '<td><button class="small danger" data-del="' + c.id + '">删除</button></td>';
+    tbody.append(tr);
+  });
+  tb.append(tbody);
+  card.append(tb);
+  card.append(el('div', {cls:'row-actions'},
+    el('button', {cls:'primary', onclick: saveCases}, '💾 保存用例（启停 / 条数）')));
+  m.append(card);
+
+  const addCard = el('div', {cls:'card'});
+  addCard.append(el('h2', {}, '➕ 添加测试用例'));
+  addCard.append(el('div', {cls:'grid2', html:
+    '<div class="field"><label>数据集</label><select id="nc-dataset">'
+      + '<option value="random">random</option><option value="gsm8k">gsm8k</option></select></div>'
+    + '<div class="field"><label>输入长度</label><input type="text" id="nc-in" placeholder="如 1k / 64k / 1000k"></div>'
+    + '<div class="field"><label>输出长度</label><input type="text" id="nc-out" placeholder="如 1k"></div>'
+    + '<div class="field"><label>缓存命中率</label><input type="text" id="nc-hit" placeholder="0 / 0.3 / 0.9"></div>'
+    + '<div class="field"><label>前缀数量</label><input type="number" id="nc-pnum" value="1"></div>'
+    + '<div class="field"><label>TTFT SLA (ms)</label><input type="number" id="nc-ttft" value="10000"></div>'
+    + '<div class="field"><label>TPOT SLA (ms)</label><input type="number" id="nc-tpot" value="50"></div>'
+    + '<div class="field"><label>数据集条数（gsm8k）</label><input type="number" id="nc-num" placeholder="默认 1000"></div>'}));
+  addCard.append(el('div', {cls:'row-actions'},
+    el('button', {cls:'primary', onclick: addCase}, '添加用例')));
+  m.append(addCard);
+
+  const bc = document.getElementById('badge-cases'); if (bc) bc.textContent = cases.length;
+}
+
+async function saveCases() {
+  const rows = document.querySelectorAll('tbody tr[data-id]');
+  const payload = {cases: []};
+  rows.forEach(tr => {
+    const numInp = tr.querySelector('.dsnum');
+    payload.cases.push({id: tr.dataset.id, enabled: tr.querySelector('.en').checked,
+                        dataset_num: numInp ? numInp.value : null});
+  });
+  const r = await api('/api/cases', {method:'POST', body: JSON.stringify(payload)});
+  toast(r.ok ? '用例已保存' : ('保存失败: ' + (r.error||'')));
+  if (r.ok) renderCases();
+}
+
+async function addCase() {
+  const raw = [$('#nc-dataset').value, $('#nc-in').value, $('#nc-out').value,
+    ($('#nc-hit').value||'0'), ($('#nc-pnum').value||'1'), $('#nc-ttft').value, $('#nc-tpot').value].join(', ');
+  const r = await api('/api/cases/add', {method:'POST', body: JSON.stringify({raw, dataset_num: $('#nc-num').value || null})});
+  toast(r.ok ? ('用例已添加: ' + r.case.id) : ('失败: ' + (r.error||'')));
+  if (r.ok) renderCases();
+}
+async function delCase(id) {
+  if (!confirm('删除用例 ' + id + ' ?')) return;
+  await api('/api/cases/delete', {method:'POST', body: JSON.stringify({id})});
+  toast('已删除'); renderCases();
+}
+async function genCase(id) {
+  await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({case_ids:[id]})});
+  toast('已开始生成数据集: ' + id);
+  setTimeout(renderCases, 1500);
+}
+async function detectDatasets() {
+  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({})});
+  toast('已检测：' + (r.count||0) + ' 个未生成的数据集开始生成');
+  setTimeout(renderCases, 1500);
+}
+async function genDatasets(force) {
+  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({force})});
+  toast((force?'强制重新生成 ':'生成 ') + (r.count||0) + ' 个数据集');
+  setTimeout(renderCases, 1500);
+}
+
+/* 用例表内的「生成」「删除」用事件委托 */
+document.addEventListener('click', e => {
+  const g = e.target.closest && e.target.closest('[data-gen]');
+  if (g) { genCase(g.dataset.gen); return; }
+  const d = e.target.closest && e.target.closest('[data-del]');
+  if (d && d.tagName === 'BUTTON') { delCase(d.dataset.del); return; }
+});
+
+/* ============================ 测试工程视图 ============================ */
+async function renderProjects() {
+  if (CURRENT_PROJECT) return renderProjectDetail(CURRENT_PROJECT);
+  const {projects} = await api('/api/projects');
+  const m = $('#main'); m.innerHTML = '';
+  m.append(el('h1', {}, '测试工程'));
+  m.append(el('div', {cls:'sub'}, '一个工程 = 一组要测试的用例；打开工程可启动/终止其测试任务，并查看每个用例的性能结果与日志'));
+
+  const bar = el('div', {cls:'toolbar'});
+  bar.append(el('button', {cls:'primary', onclick: newProject}, '➕ 新建测试工程'));
+  bar.append(el('span', {cls:'spacer'}));
+  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderProjects()}}, '刷新')));
+  m.append(bar);
+
+  if (!projects.length) {
+    m.append(el('div', {cls:'card'}, el('div', {cls:'muted'}, '还没有测试工程，点「新建测试工程」创建（默认纳入所有启用用例）')));
+  } else {
+    const grid = el('div', {cls:'proj-grid'});
+    projects.forEach(p => {
+      const total = p.case_count || 0;
+      const pct = total ? Math.round((p.done||0)/total*100) : 0;
+      const card = el('div', {cls:'proj-card'});
+      card.append(el('h3', {}, '📦 ' + p.name));
+      card.append(el('div', {cls:'meta'},
+        '用例 ' + total + ' · 已完成 ' + (p.done||0) + ' · 进行/排队 ' + (p.running||0) + ' · ' + (p.created||'')));
+      card.append(el('div', {cls:'bar', html:'<div style="width:'+pct+'%"></div>'}));
+      const ops = el('div', {cls:'row-actions'});
+      ops.append(el('button', {cls:'small', onclick:()=>openProject(p.id)}, '打开'));
+      ops.append(el('button', {cls:'small primary', onclick:()=>runProject(p.id)}, '▶ 启动'));
+      ops.append(el('button', {cls:'small danger', onclick:()=>stopProject(p.id)}, '■ 终止'));
+      ops.append(el('button', {cls:'small danger', onclick:()=>delProject(p.id)}, '删除'));
+      card.append(ops);
+      grid.append(card);
+    });
+    m.append(grid);
+  }
+  const bp = document.getElementById('badge-projects'); if (bp) bp.textContent = projects.length;
+}
+
+async function newProject() {
+  const {cases} = await api('/api/cases');
+  const nEn = cases.filter(c => c.enabled !== false).length;
+  const name = prompt('测试工程名称（默认纳入 ' + nEn + ' 个启用用例）：', '工程' + new Date().toLocaleTimeString());
+  if (name === null) return;
+  const r = await api('/api/projects', {method:'POST', body: JSON.stringify({name})});
+  if (r.ok) { toast('已创建工程'); renderProjects(); }
+  else toast('创建失败: ' + (r.error||''));
+}
+async function delProject(id) {
+  if (!confirm('删除该测试工程？（不影响已生成的结果）')) return;
+  await api('/api/projects/delete', {method:'POST', body: JSON.stringify({id})});
+  toast('已删除'); renderProjects();
+}
+async function runProject(id) {
+  const r = await api('/api/projects/'+id+'/run', {method:'POST', body: JSON.stringify({})});
+  toast(r.ok ? ('已启动 ' + (r.queued||[]).length + ' 个用例') : ('启动失败: ' + (r.error||'')));
+}
+async function stopProject(id) {
+  await api('/api/projects/'+id+'/stop', {method:'POST', body: '{}'});
+  toast('已请求终止'); setTimeout(renderProjects, 500);
+}
+async function openProject(id) { CURRENT_PROJECT = id; renderProjectDetail(id); }
+
+async function renderProjectDetail(pid) {
+  const d = await api('/api/projects/'+pid);
+  if (d.ok === false) { CURRENT_PROJECT = null; return renderProjects(); }
+  const m = $('#main'); m.innerHTML = '';
+  m.append(el('span', {cls:'back', onclick:()=>{CURRENT_PROJECT=null;renderProjects();}}, '← 返回工程列表'));
+  m.append(el('h1', {}, '📦 ' + d.project.name));
+  m.append(el('div', {cls:'sub'}, '工程 ID: ' + pid + ' · 用例 ' + d.cases.length + ' · 创建 ' + (d.project.created||'')));
+
+  const bar = el('div', {cls:'toolbar'});
+  bar.append(el('button', {cls:'primary', onclick:()=>runProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '▶ 启动全部用例'));
+  bar.append(el('button', {cls:'danger', onclick:()=>stopProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '■ 终止'));
+  bar.append(el('span', {cls:'spacer'}));
+  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderProjectDetail(pid)}}, '刷新')));
   m.append(bar);
 
   const card = el('div', {cls:'card'});
   const tb = el('table');
-  tb.innerHTML = `<thead><tr><th>状态</th><th>场景 ID</th><th>数据集</th><th>输入/输出</th>
-    <th>命中</th><th>SLA</th><th>开始</th><th>结束</th><th>操作</th></tr></thead>`;
+  tb.innerHTML = '<thead><tr><th>状态</th><th>用例 ID</th><th>数据集</th><th>输入/输出</th>'
+    + '<th>命中</th><th>SLA</th><th>开始</th><th>结束</th><th>操作</th></tr></thead>';
   const tbody = el('tbody');
-  tasks.forEach(t => {
+  d.cases.forEach(c => {
     const tr = el('tr');
-    tr.innerHTML = `
-      <td>${pill(t.status)}</td>
-      <td><code>${t.id}</code></td>
-      <td>${t.dataset}</td>
-      <td>${kfmt(t.input_len)} / ${kfmt(t.output_len)}</td>
-      <td>${hitfmt(t.hit_rate)}</td>
-      <td>TTFT≤${t.ttft_sla_ms}ms TPOT≤${t.tpot_sla_ms}ms</td>
-      <td class="muted">${t.started||'-'}</td>
-      <td class="muted">${t.finished||'-'}</td>
-      <td></td>`;
+    tr.innerHTML =
+      '<td>' + pill(c.status) + '</td>'
+      + '<td><code>' + c.case_id + '</code></td>'
+      + '<td>' + c.dataset + '</td>'
+      + '<td>' + kfmt(c.input_len) + ' / ' + kfmt(c.output_len) + '</td>'
+      + '<td>' + hitfmt(c.hit_rate) + '</td>'
+      + '<td>TTFT≤' + c.ttft_sla_ms + 'ms TPOT≤' + c.tpot_sla_ms + 'ms</td>'
+      + '<td class="muted">' + (c.started||'-') + '</td>'
+      + '<td class="muted">' + (c.finished||'-') + '</td>'
+      + '<td></td>';
     const op = tr.lastElementChild;
-    const btnOpen = el('button', {cls:'small', onclick: () => openTask(t.id)}, '查看结果');
-    op.append(btnOpen);
-    if (t.status !== 'done') op.append(el('button', {cls:'small', onclick: () => runOne(t.id)}, '运行'));
-    if (t.error) op.append(el('span', {cls:'muted', style:'margin-left:6px'}, '⚠ '+t.error));
+    op.append(el('button', {cls:'small', onclick:()=>openCase(pid,c.case_id)}, '查看结果'));
+    op.append(el('button', {cls:'small', onclick:()=>runOne(pid,c.case_id)}, '运行'));
+    if (c.error) op.append(el('span', {cls:'muted', style:'margin-left:6px'}, '⚠ ' + c.error));
     tbody.append(tr);
   });
   tb.append(tbody);
   card.append(tb);
   m.append(card);
-
-  $('#badge-tasks').textContent = `${done}/${tasks.length}`;
 }
 
-async function runOne(id) {
-  const r = await api('/api/run', {method:'POST', body: JSON.stringify({ids:[id]})});
-  toast(r.ok ? '已加入队列: '+id : ('失败: '+(r.error||'')));
-  setTimeout(renderTasks, 400);
-}
-async function runEnabled() {
-  const r = await api('/api/run', {method:'POST', body: JSON.stringify({})});
-  toast(r.ok ? `已排队 ${r.queued.length} 个场景` : ('失败: '+(r.error||'')));
-  setTimeout(renderTasks, 400);
-}
-async function runMissing() {
-  const {tasks} = await api('/api/tasks');
-  const ids = tasks.filter(t=>t.status!=='done').map(t=>t.id);
-  if (!ids.length) return toast('所有场景均已完成');
-  const r = await api('/api/run', {method:'POST', body: JSON.stringify({ids})});
-  toast(`已排队 ${r.queued.length} 个未完成场景`);
-  setTimeout(renderTasks, 400);
-}
-async function stopAll() {
-  await api('/api/stop', {method:'POST', body:'{}'});
-  toast('已请求停止'); setTimeout(renderTasks, 400);
+async function runOne(pid, cid) {
+  const r = await api('/api/projects/'+pid+'/run', {method:'POST', body: JSON.stringify({case_ids:[cid]})});
+  toast(r.ok ? ('已启动: ' + cid) : ('失败: ' + (r.error||'')));
+  setTimeout(()=>renderProjectDetail(pid), 600);
 }
 
-async function openTask(id) {
-  const d = await api('/api/tasks/'+id);
-  $('#dlg-title').textContent = '场景 '+id;
+async function openCase(pid, cid) {
+  const d = await api('/api/projects/'+pid+'/case/'+cid);
+  $('#dlg-title').textContent = '用例 ' + cid;
   const body = $('#dlg-body'); body.innerHTML = '';
 
-  // 基本信息
   const kv = el('div', {cls:'kv'});
   kv.append(el('div', {cls:'k'}, '状态'), el('div', {cls:'v', html: pill(d.task.status||'not_started')}));
-  kv.append(el('div', {cls:'k'}, '结果目录'), el('div', {cls:'v', html: '<code>'+(d.result_dir||'-')+'</code>'}));
+  kv.append(el('div', {cls:'k'}, '结果目录'), el('div', {cls:'v', html:'<code>' + (d.result_dir||'-') + '</code>'}));
   kv.append(el('div', {cls:'k'}, '汇总文件'),
-    el('div', {cls:'v', html: d.summary_path ? ('<code>'+d.summary_path+'</code>') : '<span class="muted">尚未生成</span>'}));
+    el('div', {cls:'v', html: d.summary_path ? ('<code>' + d.summary_path + '</code>') : '<span class="muted">尚未生成</span>'}));
   const logDiv = el('div', {cls:'v'});
-  if (d.task.log_path) {
-    logDiv.innerHTML = '<code>'+d.task.log_path+'</code> ';
-    const logBtn = el('button', {cls:'small'}, '查看');
-    logBtn.onclick = () => showLog(d.task.log_path);
-    logDiv.append(logBtn);
-  } else {
-    logDiv.innerHTML = '<span class="muted">-</span>';
-  }
+  if (d.log_path) {
+    logDiv.innerHTML = '<code>' + d.log_path + '</code> ';
+    const b = el('button', {cls:'small'}, '查看'); b.onclick = () => showLog(d.log_path); logDiv.append(b);
+  } else logDiv.innerHTML = '<span class="muted">-</span>';
   kv.append(el('div', {cls:'k'}, '运行日志'), logDiv);
   body.append(kv);
 
-  // 性能结果表
   body.append(el('h3', {style:'font-size:13px'}, '性能结果（各并发达标情况）'));
   if (!d.rows || !d.rows.length) {
-    body.append(el('div', {cls:'muted'}, '暂无结果数据（任务未完成或未达并发）'));
+    body.append(el('div', {cls:'muted'}, '暂无结果数据（用例未完成或未产生结果）'));
   } else {
     const tb = el('table');
-    tb.innerHTML = `<thead><tr><th>并发</th><th>TTFT(ms)</th><th>TPOT(ms)</th><th>延迟(s)</th>
-      <th>成功/总</th><th>输出tok/s</th><th>总tok/s</th></tr></thead>`;
+    tb.innerHTML = '<thead><tr><th>并发</th><th>TTFT(ms)</th><th>TPOT(ms)</th><th>延迟(s)</th>'
+      + '<th>成功/总</th><th>输出tok/s</th><th>总tok/s</th></tr></thead>';
     const tb2 = el('tbody');
     d.rows.forEach(r => {
-      if (r.error) { tb2.append(el('tr', {html:`<td colspan=7 class="muted">${r.error}</td>`})); return; }
-      tb2.append(el('tr', {html:`<td>${r.parallel}</td>
-        <td>${r.ttft==null?'-':(+r.ttft).toFixed(0)}</td>
-        <td>${r.tpot==null?'-':(+r.tpot).toFixed(2)}</td>
-        <td>${r.latency==null?'-':(+r.latency).toFixed(1)}</td>
-        <td>${(r.ok||0)}/${(r.total||0)}</td>
-        <td>${r.out_tps==null?'-':(+r.out_tps).toFixed(1)}</td>
-        <td>${r.total_tps==null?'-':(+r.total_tps).toFixed(1)}</td>`}));
+      if (r.error) { tb2.append(el('tr', {html:'<td colspan=7 class="muted">' + r.error + '</td>'})); return; }
+      tb2.append(el('tr', {html:'<td>' + r.parallel + '</td>'
+        + '<td>' + (r.ttft==null?'-':(+r.ttft).toFixed(0)) + '</td>'
+        + '<td>' + (r.tpot==null?'-':(+r.tpot).toFixed(2)) + '</td>'
+        + '<td>' + (r.latency==null?'-':(+r.latency).toFixed(1)) + '</td>'
+        + '<td>' + (r.ok||0) + '/' + (r.total||0) + '</td>'
+        + '<td>' + (r.out_tps==null?'-':(+r.out_tps).toFixed(1)) + '</td>'
+        + '<td>' + (r.total_tps==null?'-':(+r.total_tps).toFixed(1)) + '</td>'}));
     });
     tb.append(tb2); body.append(tb);
   }
@@ -388,98 +479,34 @@ async function openTask(id) {
     body.append(el('h3', {style:'font-size:13px;margin-top:16px'}, '分并发日志'));
     d.per_concurrency_logs.forEach(p => {
       const row = el('div');
-      row.innerHTML = '<code>'+p+'</code> ';
-      const btn = el('button', {cls:'small'}, '查看');
-      btn.onclick = () => showLog(p);
-      row.append(btn);
+      row.innerHTML = '<code>' + p + '</code> ';
+      const b = el('button', {cls:'small'}, '查看'); b.onclick = () => showLog(p); row.append(b);
       body.append(row);
     });
   }
   $('#dlg').showModal();
 }
+
 async function showLog(path) {
-  const r = await api('/api/log?path='+encodeURIComponent(path));
-  $('#dlg-title').textContent = '日志: '+path.split('/').slice(-2).join('/');
+  const r = await api('/api/log?path=' + encodeURIComponent(path));
+  $('#dlg-title').textContent = '日志: ' + path.split('/').slice(-2).join('/');
   $('#dlg-body').innerHTML = '';
   $('#dlg-body').append(el('pre', {cls:'log'}, (r.lines||['(空)']).join('')));
   if (!$('#dlg').open) $('#dlg').showModal();
 }
 
-/* ============================ 数据集详情视图 ============================ */
-async function renderDatasets() {
-  const {datasets} = await api('/api/datasets');
-  const m = $('#main'); m.innerHTML = '';
-  m.append(el('h1', {}, '数据集详情'));
-  m.append(el('div', {cls:'sub'}, '仅 gsm8k 场景需要本地数据集；相同 (输入长度, 缓存命中率) 共用同一数据集文件（复用）'));
-
-  const bar = el('div', {cls:'toolbar'});
-  bar.append(el('button', {cls:'primary', onclick: () => genAll(false)}, '⚡ 一键生成全部数据集'));
-  bar.append(el('button', {onclick: () => genAll(true)}, '♻️ 强制重新生成全部'));
-  bar.append(el('span', {cls:'spacer'}));
-  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderDatasets()}}, '刷新')));
-  m.append(bar);
-
-  const card = el('div', {cls:'card'});
-  const tb = el('table');
-  tb.innerHTML = `<thead><tr><th>数据集键</th><th>输入长度</th><th>命中率</th><th>条数</th>
-    <th>状态</th><th>数据集文件</th><th>操作</th></tr></thead>`;
-  const tbody = el('tbody');
-  // 按 shared_key 去重展示
-  const byKey = {};
-  datasets.forEach(d => { if (!byKey[d.shared_key]) byKey[d.shared_key] = {...d, scenarios:[d.scenario_id]};
-    else byKey[d.shared_key].scenarios.push(d.scenario_id); });
-  Object.values(byKey).forEach(d => {
-    const tr = el('tr');
-    tr.innerHTML = `
-      <td><code>${d.shared_key}</code>${d.scenarios.length>1?` <span class="muted">(复用×${d.scenarios.length})</span>`:''}</td>
-      <td>${kfmt(d.input_len)}</td>
-      <td>${hitfmt(d.hit_rate)}</td>
-      <td><input type="number" class="num" data-key="${d.shared_key}" value="${d.num}" style="width:90px"></td>
-      <td>${d.exists?`<span class="pill done">已生成</span> <span class="muted">${(d.size/1024).toFixed(0)} KB</span>`:`<span class="pill not_started">未生成</span>`}</td>
-      <td class="muted">${d.dataset_file}</td>
-      <td></td>`;
-    const op = tr.lastElementChild;
-    op.append(el('button', {cls:'small', onclick: () => saveNum(d.shared_key)}, '保存条数'));
-    op.append(el('button', {cls:'small', onclick: () => genOne(d.shared_key, false)}, '生成'));
-    op.append(el('button', {cls:'small', onclick: () => genOne(d.shared_key, true)}, '重生成'));
-    tbody.append(tr);
-  });
-  tb.append(tbody);
-  card.append(tb);
-  m.append(card);
-
-  const total = Object.keys(byKey).length;
-  const doneN = Object.values(byKey).filter(d=>d.exists).length;
-  $('#badge-datasets').textContent = `${doneN}/${total}`;
-}
-
-async function saveNum(key) {
-  const inp = document.querySelector(`.num[data-key="${key}"]`);
-  await api('/api/datasets/number', {method:'POST', body: JSON.stringify({key, num: inp.value})});
-  toast('条数已保存（'+key+' = '+inp.value+'）');
-}
-async function genOne(key, force) {
-  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({keys:[key], force})});
-  toast(`已开始生成 ${key}` + (force?'（强制）':''));
-  setTimeout(renderDatasets, 1500);
-}
-async function genAll(force) {
-  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({force})});
-  toast(`已开始生成全部数据集（${r.count} 个）` + (force?'（强制）':''));
-  setTimeout(renderDatasets, 1500);
-}
-
 /* ============================ 导航 ============================ */
-const RENDER = { config: renderConfig, tasks: renderTasks, datasets: renderDatasets };
+const RENDER = { config: renderConfig, cases: renderCases, projects: renderProjects };
 async function go(view) {
   VIEW = view;
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view===view));
+  if (view !== 'projects') CURRENT_PROJECT = null;
+  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
   await RENDER[view]();
 }
 document.querySelectorAll('#nav a').forEach(a => a.onclick = () => go(a.dataset.view));
 
-/* 自动刷新：仅测试详情视图 */
-setInterval(() => { if (VIEW === 'tasks') renderTasks(); }, 5000);
+/* 自动刷新：测试工程详情页 5 秒刷新 */
+setInterval(() => { if (VIEW === 'projects' && CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); }, 5000);
 
 go('config');
 </script>

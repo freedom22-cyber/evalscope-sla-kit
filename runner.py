@@ -120,14 +120,18 @@ def build_headers(cfg: dict) -> list:
 
 
 def dataset_number(cfg: dict, sc: dict) -> int:
-    """数据集条数：per-(input_len, hit_rate) 覆盖优先，其次全局 gsm8k_number。
+    """数据集条数：用例级覆盖 -> (input_len, hit_rate) 覆盖 -> 全局默认。
 
-    相同 (input_len, hit_rate) 的场景共用同一个数据集文件（按文件名复用），
-    Web UI 的按数据集条数覆盖就存在 cfg['dataset']['number_overrides'] 里。
+    Web UI 按用例存条数（case_number_overrides[case_id]）；文件名含条数，
+    相同 (input_len, hit_rate, 条数) 的用例天然复用同一数据集文件。
     """
-    overrides = (cfg["dataset"].get("number_overrides") or {})
+    ds = cfg["dataset"]
+    case_ov = ds.get("case_number_overrides") or {}
+    if sc.get("id") and sc["id"] in case_ov:
+        return int(case_ov[sc["id"]])
+    overrides = ds.get("number_overrides") or {}
     key = f"{sc['input_len']}_{sc['hit_rate']}"
-    return int(overrides.get(key, cfg["dataset"]["gsm8k_number"]))
+    return int(overrides.get(key, ds["gsm8k_number"]))
 
 
 def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:

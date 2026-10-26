@@ -1,39 +1,39 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""evalscope 摸高测试 Web 前端后端（FastAPI）。
+"""evalscope 摸高测试 Web 控制台后端（FastAPI）。
 
 三视图：
-  1. 配置项   —— url / model / tokenizer / Host 头开关 / 测试场景增删启停
-  2. 测试详情 —— 任务状态（已完成 / 进行中 / 未开始），点开看性能结果 + 日志路径
-  3. 数据集详情 —— 按场景配置数据集条数、复用同一 (input_len, hit_rate) 的数据集、
-                   一键生成全部数据集
+  1. 配置项   —— url / model / tokenizer / Host 头开关 / 摸高参数
+  2. 测试用例 —— 用例列表（增删启停）、每个用例设置数据集条数、
+                 「检测数据集是否生成」开关（自动补齐未生成的数据集）、
+                 自定义添加要测试的用例
+  3. 测试工程 —— 工程列表（新建/删除），工程内可启动/终止测试任务；
+                 打开工程查看其用例，每个用例查看性能结果与日志路径
 
-设计:
-  config.yaml 作为「带注释的默认配置」（CLI 与 Web 共用），Web UI 的改动落盘到
-  同目录的 web_state.json（overlay），从而不破坏 config.yaml 的注释。
-
-启动:
-  python3 webapp.py                 # 默认 0.0.0.0:8300
-  python3 webapp.py --port 8300
+数据模型（落盘 web_state.json，不覆盖 config.yaml 注释）:
+  cases:    [{id, raw, dataset, input_len, output_len, hit_rate, prefix_num,
+              ttft_sla_ms, tpot_sla_ms, dataset_num, enabled}, ...]
+  projects: [{id, name, case_ids: [...], created}, ...]
+  tasks:    {"<project_id>/<case_id>": {status, started, finished, log_path, ...}}
 """
 import argparse
+import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
-import glob
-from copy import deepcopy
 
 KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, KIT_ROOT)
 
-import runner  # noqa: E402  复用场景解析 / 数据集 / 命令行构建
+import runner  # noqa: E402
 
 try:
     from fastapi import FastAPI, Body
-    from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+    from fastapi.responses import JSONResponse, HTMLResponse
     import uvicorn
 except ImportError:
     print("缺少 fastapi/uvicorn，请先 pip install fastapi uvicorn", file=sys.stderr)
@@ -48,23 +48,16 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 STATE_LOCK = threading.Lock()
-_TASKS = {}          # id -> task dict
-_RUN_QUEUE = []      # pending scenario ids
+_TASKS = {}          # "<project>/<case>" -> task
+_RUN_QUEUE = []      # [(project_id, case_id)]
 _RUN_THREAD = None
 _STOP_FLAG = threading.Event()
 
 
 # ---------------------------------------------------------------- state ----
 def _default_state():
-    return {
-        "service_override": {},
-        "request_override": {},
-        "benchmark_override": {},
-        "scenarios": None,            # None = 用 config.yaml
-        "scenarios_disabled": [],
-        "number_overrides": {},       # "<input_len>_<hit_rate>" -> 条数
-        "tasks": {},
-    }
+    return {"service_override": {}, "request_override": {}, "benchmark_override": {},
+            "cases": None, "projects": [], "tasks": {}}
 
 
 def load_state():
@@ -89,39 +82,49 @@ def save_state(st):
 
 
 def effective_config():
-    """config.yaml 深合并 web_state 覆盖，得到 Web/CLI 一致的有效配置。"""
     cfg = runner.load_config(CONFIG_PATH)
     st = load_state()
     for sec in ("service", "request", "benchmark"):
         ov = st.get(sec + "_override") or {}
         if ov:
             cfg.setdefault(sec, {}).update(ov)
-    # 场景列表：Web 若自定义则覆盖 config.yaml
-    if st.get("scenarios"):
-        cfg["scenarios"] = list(st["scenarios"])
-    # 数据集条数覆盖
-    cfg["dataset"]["number_overrides"] = dict(st.get("number_overrides") or {})
+    # 用例级条数覆盖（文件名含条数 -> 相同长度/命中/条数天然复用）
+    case_num = {c["id"]: c.get("dataset_num")
+                for c in (st.get("cases") or []) if c.get("dataset_num")}
+    cfg["dataset"]["case_number_overrides"] = case_num
     return cfg, st
 
 
-def parse_scenarios(cfg, st):
-    """返回场景列表，每个含 id/字段/enabled。"""
+def case_from_raw(raw, cid=None):
+    """把一行场景文本解析成用例 dict。"""
+    sc = runner.parse_scenario(raw)
+    sc["id"] = cid or runner.scenario_id(sc)
+    sc["dataset_num"] = None
+    sc["enabled"] = True
+    return sc
+
+
+def get_cases(st=None):
+    """取用例列表：state 有则用 state，否则从 config.yaml 派生。"""
+    st = st or load_state()
+    if st.get("cases"):
+        return st["cases"]
+    cfg = runner.load_config(CONFIG_PATH)
     out = []
-    disabled = set(st.get("scenarios_disabled") or [])
     for line in cfg.get("scenarios") or []:
         line = str(line).strip()
         if not line or line.startswith("#"):
             continue
         try:
-            sc = runner.parse_scenario(line)
-        except Exception as e:
-            out.append({"id": None, "raw": line, "error": str(e), "enabled": False})
+            out.append(case_from_raw(line))
+        except Exception:
             continue
-        sid = runner.scenario_id(sc)
-        sc["id"] = sid
-        sc["enabled"] = sid not in disabled
-        out.append(sc)
     return out
+
+
+def save_cases(st, cases):
+    st["cases"] = cases
+    save_state(st)
 
 
 # --------------------------------------------------------------- tasks ----
@@ -129,29 +132,26 @@ def _now():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _task_running():
-    return any(t.get("status") == "running" for t in _TASKS.values())
-
-
 def _persist_tasks():
     st = load_state()
-    st["tasks"] = {
-        k: {kk: vv for kk, vv in v.items()}
-        for k, v in _TASKS.items()
-    }
+    st["tasks"] = {k: dict(v) for k, v in _TASKS.items()}
     save_state(st)
 
 
-def _set_task(sid, **kw):
+def _set_task(key, **kw):
     with STATE_LOCK:
-        t = _TASKS.setdefault(sid, {"id": sid, "status": "pending"})
+        t = _TASKS.setdefault(key, {"key": key})
         t.update(kw)
     _persist_tasks()
 
 
-def _result_of(sid):
-    """找场景最新 sla_summary.json 并解析成表。"""
-    sc_dir = os.path.join(RESULTS_DIR, sid)
+def _task_key(project_id, case_id):
+    return f"{project_id}/{case_id}"
+
+
+def _result_of(case_id):
+    """找用例最新 sla_summary.json 并解析成表。"""
+    sc_dir = os.path.join(RESULTS_DIR, case_id)
     summary = None
     paths = sorted(glob.glob(os.path.join(sc_dir, "*", "*", "sla_summary.json")))
     if paths:
@@ -169,70 +169,80 @@ def _result_of(sid):
                 except (IndexError, ValueError):
                     continue
                 m = (v or {}).get("metrics", {}) or {}
-                rows.append({
-                    "parallel": par,
-                    "ttft": m.get("Avg TTFT (ms)"),
-                    "tpot": m.get("Avg TPOT (ms)"),
-                    "latency": m.get("Avg Latency (s)"),
-                    "ok": m.get("Success Requests"),
-                    "total": m.get("Total Requests"),
-                    "out_tps": m.get("Output Throughput (tok/s)"),
-                    "total_tps": m.get("Total Throughput (tok/s)"),
-                })
+                rows.append({"parallel": par, "ttft": m.get("Avg TTFT (ms)"),
+                             "tpot": m.get("Avg TPOT (ms)"), "latency": m.get("Avg Latency (s)"),
+                             "ok": m.get("Success Requests"), "total": m.get("Total Requests"),
+                             "out_tps": m.get("Output Throughput (tok/s)"),
+                             "total_tps": m.get("Total Throughput (tok/s)")})
             rows.sort(key=lambda r: r["parallel"])
         except Exception as e:
             rows = [{"error": str(e)}]
-    return {"summary_path": summary, "rows": rows}
+    return {"summary_path": summary, "rows": rows, "result_dir": sc_dir}
 
 
-# ------------------------------------------------------------- runner ----
-def _run_one(sid, cfg, st):
-    """执行单个场景：确保数据集 -> 构建命令 -> 跑 evalscope -> 记录结果。"""
-    scenarios = parse_scenarios(cfg, st)
-    sc = next((s for s in scenarios if s.get("id") == sid), None)
-    if sc is None:
-        _set_task(sid, status="error", error="场景不存在")
+# --------------------------------------------------------- data pipeline ---
+def dataset_status(cfg, st):
+    """返回每个 gsm8k 用例的数据集状态（含复用信息）。"""
+    cases = get_cases(st)
+    seen = {}
+    out = []
+    for c in cases:
+        if c.get("dataset") != "gsm8k":
+            continue
+        jsonl, prompts = runner.gsm8k_dataset_paths(cfg, c)
+        key = os.path.basename(prompts)
+        exists = os.path.exists(prompts)
+        n = runner.dataset_number(cfg, c)
+        out.append({"case_id": c["id"], "input_len": c["input_len"], "hit_rate": c["hit_rate"],
+                    "num": n, "dataset_file": os.path.basename(jsonl), "prompts_path": prompts,
+                    "exists": exists, "size": os.path.getsize(prompts) if exists else 0,
+                    "shared_key": key, "shared": key in seen})
+        seen[key] = True
+    return out
+
+
+def _run_case(project_id, case_id, cfg, st):
+    """执行一个用例并记录任务状态。"""
+    key = _task_key(project_id, case_id)
+    cases = get_cases(st)
+    c = next((x for x in cases if x.get("id") == case_id), None)
+    if c is None:
+        _set_task(key, status="error", error="用例不存在", finished=_now())
         return
 
-    log_path = os.path.join(LOGS_DIR, f"web_{sid}_{time.strftime('%Y%m%d_%H%M%S')}.log")
-    _set_task(sid, status="running", started=_now(), finished=None,
-              log_path=log_path, result_dir=os.path.join(RESULTS_DIR, sid), error=None)
+    log_path = os.path.join(LOGS_DIR, f"proj_{project_id}_{case_id}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    _set_task(key, status="running", started=_now(), finished=None, error=None,
+              log_path=log_path, result_dir=os.path.join(RESULTS_DIR, case_id),
+              case_id=case_id, project_id=project_id)
 
-    logf = open(log_path, "a", encoding="utf-8", buffering=1)
+    with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
+        def log(msg):
+            logf.write(msg + "\n")
+            logf.flush()
 
-    def log(msg):
-        logf.write(msg + "\n")
-        logf.flush()
-
-    try:
-        dataset_path = None
-        if sc["dataset"] == "gsm8k":
-            log(f"[{sid}] 确保数据集存在 ...")
-            dataset_path = runner.ensure_gsm8k_dataset(cfg, sc, force=False, log_handle=logf)
-            log(f"[{sid}] 数据集: {dataset_path}")
-
-        cmd = runner.build_evalscope_cmd(cfg, sc, dataset_path)
-        log(f"[{sid}] 命令: " + " ".join(cmd))
-        log(f"[{sid}] 开始 {_now()}")
-        env = dict(os.environ)
-        r = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        if _STOP_FLAG.is_set():
-            _set_task(sid, status="stopped", finished=_now())
-            log(f"[{sid}] 已手动停止")
-        elif r.returncode == 0:
-            res = _result_of(sid)
-            _set_task(sid, status="done", finished=_now(),
-                      summary_path=res["summary_path"])
-            log(f"[{sid}] 完成 {_now()}")
-        else:
-            _set_task(sid, status="error", finished=_now(),
-                      error=f"exit code {r.returncode}")
-            log(f"[{sid}] 失败 exit={r.returncode}")
-    except Exception as e:
-        _set_task(sid, status="error", finished=_now(), error=str(e))
-        log(f"[{sid}] 异常: {e}")
-    finally:
-        logf.close()
+        try:
+            dataset_path = None
+            if c["dataset"] == "gsm8k":
+                log(f"[{case_id}] 确保数据集存在 ...")
+                dataset_path = runner.ensure_gsm8k_dataset(cfg, c, force=False, log_handle=logf)
+                log(f"[{case_id}] 数据集: {dataset_path}")
+            cmd = runner.build_evalscope_cmd(cfg, c, dataset_path)
+            log(f"[{case_id}] 命令: " + " ".join(cmd))
+            log(f"[{case_id}] 开始 {_now()}")
+            r = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT)
+            if _STOP_FLAG.is_set():
+                _set_task(key, status="stopped", finished=_now())
+                log(f"[{case_id}] 已手动停止")
+            elif r.returncode == 0:
+                res = _result_of(case_id)
+                _set_task(key, status="done", finished=_now(), summary_path=res["summary_path"])
+                log(f"[{case_id}] 完成 {_now()}")
+            else:
+                _set_task(key, status="error", finished=_now(), error=f"exit code {r.returncode}")
+                log(f"[{case_id}] 失败 exit={r.returncode}")
+        except Exception as e:
+            _set_task(key, status="error", finished=_now(), error=str(e))
+            log(f"[{case_id}] 异常: {e}")
 
 
 def _run_worker():
@@ -242,31 +252,38 @@ def _run_worker():
             if not _RUN_QUEUE:
                 _RUN_THREAD = None
                 return
-            sid = _RUN_QUEUE.pop(0)
+            project_id, case_id = _RUN_QUEUE.pop(0)
         if _STOP_FLAG.is_set():
             continue
         cfg, st = effective_config()
         try:
-            _run_one(sid, cfg, st)
+            _run_case(project_id, case_id, cfg, st)
         except Exception as e:
-            _set_task(sid, status="error", error=str(e), finished=_now())
+            _set_task(_task_key(project_id, case_id), status="error", error=str(e), finished=_now())
         time.sleep(1)
 
 
-def enqueue_runs(ids):
+def enqueue_runs(items):
+    """items: [(project_id, case_id), ...]"""
     global _RUN_THREAD
     with STATE_LOCK:
-        for sid in ids:
-            if sid not in _RUN_QUEUE:
-                _RUN_QUEUE.append(sid)
-            _TASKS.setdefault(sid, {"id": sid})
-            if _TASKS[sid].get("status") not in ("running", "done"):
-                _TASKS[sid]["status"] = "pending"
+        for project_id, case_id in items:
+            if (project_id, case_id) not in _RUN_QUEUE:
+                _RUN_QUEUE.append((project_id, case_id))
+            key = _task_key(project_id, case_id)
+            _TASKS.setdefault(key, {"key": key})
+            if _TASKS[key].get("status") != "running":
+                _TASKS[key]["status"] = "pending"
         _STOP_FLAG.clear()
         if _RUN_THREAD is None or not _RUN_THREAD.is_alive():
             _RUN_THREAD = threading.Thread(target=_run_worker, daemon=True)
             _RUN_THREAD.start()
     _persist_tasks()
+
+
+def _latest_case_log(pid, cid):
+    pats = sorted(glob.glob(os.path.join(LOGS_DIR, f"proj_{pid}_{cid}_*.log")))
+    return pats[-1] if pats else None
 
 
 # ---------------------------------------------------------- app ------------
@@ -282,16 +299,13 @@ def index():
     return "<h1>web/index.html 缺失</h1>"
 
 
+# ----- 配置项 -----
 @app.get("/api/config")
 def api_get_config():
-    cfg, st = effective_config()
-    return {
-        "service": cfg.get("service", {}),
-        "request": cfg.get("request", {}),
-        "benchmark": cfg.get("benchmark", {}),
-        "dataset": cfg.get("dataset", {}),
-        "host_header_effective": runner.build_headers(cfg),
-    }
+    cfg, _ = effective_config()
+    return {"service": cfg.get("service", {}), "request": cfg.get("request", {}),
+            "benchmark": cfg.get("benchmark", {}), "dataset": cfg.get("dataset", {}),
+            "host_header_effective": runner.build_headers(cfg)}
 
 
 @app.post("/api/config")
@@ -300,165 +314,238 @@ def api_set_config(payload: dict = Body(...)):
     for sec in ("service", "request", "benchmark"):
         if sec in payload and isinstance(payload[sec], dict):
             st[sec + "_override"] = payload[sec]
-    if "dataset" in payload and isinstance(payload["dataset"], dict):
-        # 仅接受 number_overrides/gsm8k_number 这类可写键
-        ds = payload["dataset"]
-        if "number_overrides" in ds:
-            st["number_overrides"] = ds["number_overrides"]
-    save_state(st)
-    return {"ok": True, "state": st}
-
-
-@app.get("/api/scenarios")
-def api_scenarios():
-    cfg, st = effective_config()
-    scs = parse_scenarios(cfg, st)
-    for s in scs:
-        sid = s.get("id")
-        if sid and sid in _TASKS:
-            s["status"] = _TASKS[sid].get("status")
-        elif sid:
-            s["status"] = "pending" if False else "not_started"
-    return {"scenarios": scs}
-
-
-@app.post("/api/scenarios")
-def api_set_scenarios(payload: dict = Body(...)):
-    """增删改场景列表 + 启停。"""
-    st = load_state()
-    if "scenarios" in payload and payload["scenarios"] is not None:
-        st["scenarios"] = [str(x).strip() for x in payload["scenarios"] if str(x).strip()]
-    if "disabled" in payload:
-        st["scenarios_disabled"] = list(payload["disabled"])
     save_state(st)
     return {"ok": True}
 
 
+# ----- 测试用例 -----
+@app.get("/api/cases")
+def api_cases():
+    cfg, st = effective_config()
+    cases = get_cases(st)
+    ds = {d["case_id"]: d for d in dataset_status(cfg, st)}
+    for c in cases:
+        d = ds.get(c["id"])
+        if d:
+            c["dataset_exists"] = d["exists"]
+            c["dataset_file"] = d["dataset_file"]
+            c["dataset_num"] = d["num"]
+            c["dataset_shared"] = d["shared"]
+        else:
+            c["dataset_exists"] = None
+    return {"cases": cases}
+
+
+@app.post("/api/cases")
+def api_set_cases(payload: dict = Body(...)):
+    """整体替换用例列表（增删改都由前端提交完整列表）。
+
+    允许条目只含 {id, enabled, dataset_num}：缺 raw 时按 id 从现有用例补齐。
+    """
+    st = load_state()
+    raw_cases = payload.get("cases")
+    if raw_cases is None:
+        return JSONResponse({"ok": False, "error": "缺少 cases"}, status_code=400)
+    existing = {c["id"]: c for c in get_cases(st)}
+    parsed = []
+    for rc in raw_cases:
+        raw = rc.get("raw") or rc.get("line")
+        if not raw:
+            old = existing.get(rc.get("id"))
+            if old is None:
+                return JSONResponse({"ok": False, "error": f"未知用例且无 raw: {rc.get('id')}"}, status_code=400)
+            c = dict(old)
+        else:
+            try:
+                c = case_from_raw(raw, cid=rc.get("id"))
+            except Exception as e:
+                return JSONResponse({"ok": False, "error": f"用例格式错误: {raw} ({e})"}, status_code=400)
+        if rc.get("dataset_num") not in (None, ""):
+            try:
+                c["dataset_num"] = int(rc["dataset_num"])
+            except (TypeError, ValueError):
+                c["dataset_num"] = None
+        else:
+            c["dataset_num"] = None
+        c["enabled"] = bool(rc.get("enabled", True))
+        parsed.append(c)
+    save_cases(st, parsed)
+    return {"ok": True, "count": len(parsed)}
+
+
+@app.post("/api/cases/add")
+def api_case_add(payload: dict = Body(...)):
+    raw = payload.get("raw", "")
+    try:
+        c = case_from_raw(raw)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"格式错误: {e}"}, status_code=400)
+    if payload.get("dataset_num") not in (None, ""):
+        c["dataset_num"] = int(payload["dataset_num"])
+    st = load_state()
+    cases = get_cases(st)
+    if any(x["id"] == c["id"] for x in cases):
+        return JSONResponse({"ok": False, "error": f"用例已存在: {c['id']}"}, status_code=400)
+    cases.append(c)
+    save_cases(st, cases)
+    return {"ok": True, "case": c}
+
+
+@app.post("/api/cases/delete")
+def api_case_delete(payload: dict = Body(...)):
+    cid = payload.get("id")
+    st = load_state()
+    cases = [c for c in get_cases(st) if c["id"] != cid]
+    save_cases(st, cases)
+    return {"ok": True}
+
+
+# ----- 数据集 -----
 @app.get("/api/datasets")
 def api_datasets():
-    """只列 gsm8k 场景（random 无需本地数据集）。含复用信息。"""
     cfg, st = effective_config()
-    scs = [s for s in parse_scenarios(cfg, st) if s.get("dataset") == "gsm8k"]
-    seen = {}
-    out = []
-    for s in scs:
-        jsonl, prompts = runner.gsm8k_dataset_paths(cfg, s)
-        key = os.path.basename(prompts)
-        exists = os.path.exists(prompts)
-        n = runner.dataset_number(cfg, s)
-        entry = {
-            "scenario_id": s["id"],
-            "input_len": s["input_len"],
-            "hit_rate": s["hit_rate"],
-            "num": n,
-            "dataset_file": os.path.basename(jsonl),
-            "prompts_path": prompts,
-            "exists": exists,
-            "size": os.path.getsize(prompts) if exists else 0,
-            "shared_key": f"{s['input_len']}_{s['hit_rate']}",
-            "shared": key in seen,
-        }
-        seen[key] = True
-        out.append(entry)
-    return {"datasets": out}
-
-
-@app.post("/api/datasets/number")
-def api_set_dataset_number(payload: dict = Body(...)):
-    """设置某数据集条数（按 <input_len>_<hit_rate> 键）。"""
-    st = load_state()
-    key = str(payload.get("key", "")).strip()
-    if not key:
-        return JSONResponse({"ok": False, "error": "缺少 key"}, status_code=400)
-    if payload.get("num") in (None, ""):
-        (st.get("number_overrides") or {}).pop(key, None)
-    else:
-        st.setdefault("number_overrides", {})[key] = int(payload["num"])
-    save_state(st)
-    return {"ok": True}
+    return {"datasets": dataset_status(cfg, st)}
 
 
 @app.post("/api/datasets/generate")
-def api_generate_datasets(payload: dict = Body(default={})):
-    """一键生成全部 / 指定数据集（后台线程）。"""
+def api_datasets_generate(payload: dict = Body(default={})):
+    """生成数据集：payload.case_ids=指定用例；否则生成所有未生成的 gsm8k 用例。"""
     cfg, st = effective_config()
     force = bool(payload.get("force"))
-    only = payload.get("keys")  # None = 全部
-    scs = [s for s in parse_scenarios(cfg, st) if s.get("dataset") == "gsm8k"]
-    # 去重：同一 (input_len, hit_rate) 只生成一次
-    uniq = {}
-    for s in scs:
-        k = f"{s['input_len']}_{s['hit_rate']}"
-        if only is not None and k not in only:
+    case_ids = payload.get("case_ids")
+    cases = get_cases(st)
+    todo = {}
+    for c in cases:
+        if c.get("dataset") != "gsm8k":
             continue
-        uniq[k] = s
+        if case_ids is not None and c["id"] not in case_ids:
+            continue
+        jsonl, prompts = runner.gsm8k_dataset_paths(cfg, c)
+        if os.path.exists(prompts) and not force:
+            continue  # 已生成且非强制 -> 跳过
+        todo[os.path.basename(prompts)] = c
 
     def gen_all():
-        for k, s in uniq.items():
-            log_path = os.path.join(LOGS_DIR, f"gen_{k}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+        for fn, c in todo.items():
+            log_path = os.path.join(LOGS_DIR, f"gen_{c['id']}_{time.strftime('%Y%m%d_%H%M%S')}.log")
             with open(log_path, "a", encoding="utf-8", buffering=1) as lf:
                 try:
-                    lf.write(f"[dataset {k}] 生成中 num={runner.dataset_number(cfg, s)} force={force}\n")
-                    runner.ensure_gsm8k_dataset(cfg, s, force=force, log_handle=lf)
-                    lf.write(f"[dataset {k}] 完成\n")
+                    lf.write(f"[dataset {c['id']}] 生成中 num={runner.dataset_number(cfg, c)} force={force}\n")
+                    runner.ensure_gsm8k_dataset(cfg, c, force=force, log_handle=lf)
+                    lf.write(f"[dataset {c['id']}] 完成\n")
                 except Exception as e:
-                    lf.write(f"[dataset {k}] 失败: {e}\n")
+                    lf.write(f"[dataset {c['id']}] 失败: {e}\n")
 
     threading.Thread(target=gen_all, daemon=True).start()
-    return {"ok": True, "count": len(uniq)}
+    return {"ok": True, "count": len(todo)}
 
 
-@app.get("/api/tasks")
-def api_tasks():
-    cfg, st = effective_config()
-    scs = parse_scenarios(cfg, st)
+# ----- 测试工程 -----
+@app.get("/api/projects")
+def api_projects():
+    st = load_state()
+    projects = st.get("projects") or []
     out = []
-    for s in scs:
-        sid = s.get("id")
-        if not sid:
-            continue
-        t = _TASKS.get(sid, {})
-        res = _result_of(sid) if os.path.isdir(os.path.join(RESULTS_DIR, sid)) else {"summary_path": None, "rows": []}
-        out.append({
-            "id": sid,
-            "raw": s.get("raw"),
-            "dataset": s.get("dataset"),
-            "input_len": s.get("input_len"),
-            "output_len": s.get("output_len"),
-            "hit_rate": s.get("hit_rate"),
-            "ttft_sla_ms": s.get("ttft_sla_ms"),
-            "tpot_sla_ms": s.get("tpot_sla_ms"),
+    for p in projects:
+        keys = [_task_key(p["id"], cid) for cid in p.get("case_ids", [])]
+        statuses = [_TASKS.get(k, {}).get("status", "not_started") for k in keys]
+        out.append({**p, "case_count": len(p.get("case_ids", [])),
+                    "statuses": statuses,
+                    "done": statuses.count("done"),
+                    "running": statuses.count("running") + statuses.count("pending")})
+    return {"projects": out}
+
+
+@app.post("/api/projects")
+def api_project_add(payload: dict = Body(...)):
+    st = load_state()
+    name = (payload.get("name") or "").strip() or f"工程{len(st.get('projects') or []) + 1}"
+    case_ids = payload.get("case_ids")
+    if case_ids is None:
+        case_ids = [c["id"] for c in get_cases(st) if c.get("enabled")]
+    pid = re.sub(r"[^0-9A-Za-z_\-]", "_", name)[:40] + "_" + time.strftime("%H%M%S")
+    st.setdefault("projects", []).append({"id": pid, "name": name, "case_ids": list(case_ids),
+                                          "created": _now()})
+    save_state(st)
+    return {"ok": True, "project": {"id": pid, "name": name}}
+
+
+@app.post("/api/projects/delete")
+def api_project_delete(payload: dict = Body(...)):
+    st = load_state()
+    pid = payload.get("id")
+    st["projects"] = [p for p in (st.get("projects") or []) if p["id"] != pid]
+    save_state(st)
+    return {"ok": True}
+
+
+@app.get("/api/projects/{pid}")
+def api_project_detail(pid: str):
+    st = load_state()
+    p = next((x for x in (st.get("projects") or []) if x["id"] == pid), None)
+    if not p:
+        return JSONResponse({"ok": False, "error": "工程不存在"}, status_code=404)
+    cases = {c["id"]: c for c in get_cases(st)}
+    items = []
+    for cid in p.get("case_ids", []):
+        key = _task_key(pid, cid)
+        t = _TASKS.get(key, {})
+        c = cases.get(cid, {})
+        items.append({
+            "case_id": cid, "raw": c.get("raw"), "dataset": c.get("dataset"),
+            "input_len": c.get("input_len"), "output_len": c.get("output_len"),
+            "hit_rate": c.get("hit_rate"),
+            "ttft_sla_ms": c.get("ttft_sla_ms"), "tpot_sla_ms": c.get("tpot_sla_ms"),
             "status": t.get("status", "not_started"),
-            "started": t.get("started"),
-            "finished": t.get("finished"),
-            "error": t.get("error"),
-            "log_path": t.get("log_path"),
-            "result_dir": t.get("result_dir") or os.path.join(RESULTS_DIR, sid),
-            "summary_path": t.get("summary_path") or res["summary_path"],
-            "result_rows": res["rows"],
+            "started": t.get("started"), "finished": t.get("finished"), "error": t.get("error"),
+            "log_path": t.get("log_path") or _latest_case_log(pid, cid),
+            "result_dir": os.path.join(RESULTS_DIR, cid),
         })
-    return {"tasks": out}
+    return {"project": p, "cases": items}
 
 
-@app.get("/api/tasks/{sid}")
-def api_task_detail(sid: str):
-    res = _result_of(sid)
-    t = _TASKS.get(sid, {})
-    sc_dir = os.path.join(RESULTS_DIR, sid)
-    all_logs = sorted(glob.glob(os.path.join(sc_dir, "*", "*", "sla_tuning", "*", "benchmark.log")))
-    return {
-        "id": sid,
-        "task": t,
-        "summary_path": res["summary_path"],
-        "rows": res["rows"],
-        "result_dir": sc_dir,
-        "per_concurrency_logs": all_logs,
-    }
+@app.get("/api/projects/{pid}/case/{cid}")
+def api_project_case_detail(pid: str, cid: str):
+    res = _result_of(cid)
+    t = _TASKS.get(_task_key(pid, cid), {})
+    per_logs = sorted(glob.glob(os.path.join(res["result_dir"], "*", "*", "sla_tuning", "*", "benchmark.log")))
+    return {"case_id": cid, "task": t, "summary_path": res["summary_path"],
+            "rows": res["rows"], "result_dir": res["result_dir"],
+            "log_path": t.get("log_path") or _latest_case_log(pid, cid),
+            "per_concurrency_logs": per_logs}
+
+
+@app.post("/api/projects/{pid}/run")
+def api_project_run(pid: str, payload: dict = Body(default={})):
+    st = load_state()
+    p = next((x for x in (st.get("projects") or []) if x["id"] == pid), None)
+    if not p:
+        return JSONResponse({"ok": False, "error": "工程不存在"}, status_code=404)
+    cids = payload.get("case_ids") or p.get("case_ids", [])
+    items = [(pid, cid) for cid in cids]
+    for _, cid in items:
+        _set_task(_task_key(pid, cid), status="pending")
+    enqueue_runs(items)
+    return {"ok": True, "queued": [c for _, c in items]}
+
+
+@app.post("/api/projects/{pid}/stop")
+def api_project_stop(pid: str):
+    _STOP_FLAG.set()
+    with STATE_LOCK:
+        _RUN_QUEUE[:] = [it for it in _RUN_QUEUE if it[0] != pid]
+    st = load_state()
+    p = next((x for x in (st.get("projects") or []) if x["id"] == pid), None)
+    if p:
+        for cid in p.get("case_ids", []):
+            t = _TASKS.get(_task_key(pid, cid), {})
+            if t.get("status") in ("pending", "running"):
+                _set_task(_task_key(pid, cid), status="stopped", finished=_now())
+    return {"ok": True}
 
 
 @app.get("/api/log")
 def api_log(path: str):
-    """读取日志文件尾部若干行（仅允许 kit 目录内的文件）。"""
     ap = os.path.abspath(path)
     if not ap.startswith(os.path.abspath(KIT_ROOT)):
         return JSONResponse({"ok": False, "error": "路径越界"}, status_code=400)
@@ -469,43 +556,16 @@ def api_log(path: str):
     return {"ok": True, "lines": lines[-400:]}
 
 
-@app.post("/api/run")
-def api_run(payload: dict = Body(default={})):
-    cfg, st = effective_config()
-    scs = parse_scenarios(cfg, st)
-    enabled_ids = [s["id"] for s in scs if s.get("enabled") and s.get("id")]
-    ids = payload.get("ids") or enabled_ids
-    ids = [i for i in ids if i]
-    if not ids:
-        return JSONResponse({"ok": False, "error": "没有可运行的场景"}, status_code=400)
-    for sid in ids:
-        _set_task(sid, status="pending")
-    enqueue_runs(ids)
-    return {"ok": True, "queued": ids}
-
-
-@app.post("/api/stop")
-def api_stop():
-    _STOP_FLAG.set()
-    with STATE_LOCK:
-        _RUN_QUEUE.clear()
-    for sid, t in _TASKS.items():
-        if t.get("status") in ("pending", "running"):
-            _set_task(sid, status="stopped", finished=_now())
-    return {"ok": True}
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8300)
     args = ap.parse_args()
-    # 载入历史任务状态
     st = load_state()
-    for sid, t in (st.get("tasks") or {}).items():
+    for k, t in (st.get("tasks") or {}).items():
         if t.get("status") == "running":
             t["status"] = "interrupted"
-        _TASKS[sid] = t
+        _TASKS[k] = t
     print(f"evalscope 摸高测试控制台: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
