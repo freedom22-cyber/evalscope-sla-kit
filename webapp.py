@@ -53,6 +53,7 @@ _TASKS = {}          # "<project>/<case>" -> task
 _RUN_QUEUE = []      # [(project_id, case_id)]
 _RUN_THREAD = None
 _STOP_FLAG = threading.Event()
+_GEN_TASKS = {}      # case_id -> {status: idle|generating|done|error, error: str}
 
 
 # ---------------------------------------------------------------- state ----
@@ -334,6 +335,9 @@ def api_cases():
             c["dataset_shared"] = d["shared"]
         else:
             c["dataset_exists"] = None
+        gt = _GEN_TASKS.get(c["id"])
+        c["dataset_gen_status"] = gt.get("status", "idle") if gt else "idle"
+        c["dataset_gen_error"] = gt.get("error") if gt else None
     return {"cases": cases}
 
 
@@ -404,7 +408,10 @@ def api_datasets():
 
 @app.post("/api/datasets/generate")
 def api_datasets_generate(payload: dict = Body(default={})):
-    """生成数据集：payload.case_ids=指定用例；否则生成所有未生成的 gsm8k 用例。"""
+    """生成数据集：payload.case_ids=指定用例；否则生成所有未生成的 gsm8k 用例。
+
+    生成状态追踪在 _GEN_TASKS[case_id] 中，前端据此禁用按钮。
+    """
     cfg, st = effective_config()
     force = bool(payload.get("force"))
     case_ids = payload.get("case_ids")
@@ -415,6 +422,10 @@ def api_datasets_generate(payload: dict = Body(default={})):
             continue
         if case_ids is not None and c["id"] not in case_ids:
             continue
+        # 正在生成中的跳过
+        gt = _GEN_TASKS.get(c["id"])
+        if gt and gt.get("status") == "generating":
+            continue
         jsonl, prompts = runner.gsm8k_dataset_paths(cfg, c)
         if os.path.exists(prompts) and not force:
             continue  # 已生成且非强制 -> 跳过
@@ -422,14 +433,18 @@ def api_datasets_generate(payload: dict = Body(default={})):
 
     def gen_all():
         for fn, c in todo.items():
-            log_path = os.path.join(LOGS_DIR, f"gen_{c['id']}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+            cid = c["id"]
+            _GEN_TASKS[cid] = {"status": "generating", "error": None}
+            log_path = os.path.join(LOGS_DIR, f"gen_{cid}_{time.strftime('%Y%m%d_%H%M%S')}.log")
             with open(log_path, "a", encoding="utf-8", buffering=1) as lf:
                 try:
-                    lf.write(f"[dataset {c['id']}] 生成中 num={runner.dataset_number(cfg, c)} force={force}\n")
+                    lf.write(f"[dataset {cid}] 生成中 num={runner.dataset_number(cfg, c)} force={force}\n")
                     runner.ensure_gsm8k_dataset(cfg, c, force=force, log_handle=lf)
-                    lf.write(f"[dataset {c['id']}] 完成\n")
+                    lf.write(f"[dataset {cid}] 完成\n")
+                    _GEN_TASKS[cid] = {"status": "done", "error": None}
                 except Exception as e:
-                    lf.write(f"[dataset {c['id']}] 失败: {e}\n")
+                    lf.write(f"[dataset {cid}] 失败: {e}\n")
+                    _GEN_TASKS[cid] = {"status": "error", "error": str(e)}
 
     threading.Thread(target=gen_all, daemon=True).start()
     return {"ok": True, "count": len(todo)}
@@ -447,7 +462,10 @@ def api_projects():
         out.append({**p, "case_count": len(p.get("case_ids", [])),
                     "statuses": statuses,
                     "done": statuses.count("done"),
-                    "running": statuses.count("running") + statuses.count("pending")})
+                    "running": statuses.count("running") + statuses.count("pending"),
+                    "is_running": any(s in ("running", "pending") for s in statuses),
+                    "all_done": bool(statuses) and all(s in ("done", "error", "stopped") for s in statuses),
+                    "has_started": any(s != "not_started" for s in statuses)})
     return {"projects": out}
 
 
