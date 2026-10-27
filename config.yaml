@@ -18,7 +18,7 @@ service:
   model: glm5.3
   # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
   # 对应权重 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx）
-  tokenizer_path: /mnt/sfs_turbo/models/GLM-5.3-w4a4c8-mxfp4
+  tokenizer_path: /home/hhc/model/GLM-5.3-w4a4c4-mxfp4-0902
 
 request:
   # 是否在请求头中加 Host 参数（经过 LB/代理/网关按域名路由时需要）

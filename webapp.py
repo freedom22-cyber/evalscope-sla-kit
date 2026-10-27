@@ -223,6 +223,14 @@ def _run_case(project_id, case_id, cfg, st):
             logf.flush()
 
         try:
+            # 预检 tokenizer 路径（避免 modelscope 404）
+            try:
+                runner.check_tokenizer_path(cfg)
+            except FileNotFoundError as e:
+                _set_task(key, status="error", finished=_now(), error=str(e))
+                log(f"[{case_id}] {e}")
+                return
+
             dataset_path = None
             if c["dataset"] == "gsm8k":
                 log(f"[{case_id}] 确保数据集存在 ...")

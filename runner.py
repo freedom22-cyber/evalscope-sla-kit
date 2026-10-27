@@ -126,6 +126,21 @@ def load_config(path: str) -> dict:
     return cfg
 
 
+def check_tokenizer_path(cfg: dict) -> None:
+    """预检 tokenizer_path：不存在时提前报错，避免 modelscope 退化成远程下载 404。"""
+    tok = cfg.get("service", {}).get("tokenizer_path", "")
+    if not tok:
+        return
+    if os.path.isdir(tok):
+        return
+    # 常见误用：推理集群路径在压测机上不存在
+    raise FileNotFoundError(
+        f"tokenizer_path 目录不存在: {tok}\n"
+        f"  evalscope/modelscope 会把该路径当模型 ID 去 modelscope.cn 下载 → 404。\n"
+        f"  请在配置页填本机可用的 tokenizer 目录（含 tokenizer_config.json）。"
+    )
+
+
 def build_headers(cfg: dict) -> list:
     """构建 --headers 参数列表（Host 开关在这里生效）"""
     req = cfg["request"]
@@ -476,6 +491,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    check_tokenizer_path(cfg)
     scenarios = []
     for line in cfg["scenarios"]:
         line = str(line).strip()
