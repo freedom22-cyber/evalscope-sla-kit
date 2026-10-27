@@ -2,97 +2,228 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>evalscope 摸高测试控制台</title>
+<title>evalscope 测试控制台</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-         background: #f5f6f8; color: #1f2430; font-size: 14px; }
-  .app { display: flex; min-height: 100vh; }
-  .sidebar { width: 220px; flex: 0 0 220px; background: #1f2430; color: #c8ccd4;
-             display: flex; flex-direction: column; }
-  .brand { padding: 18px 20px; font-size: 15px; font-weight: 600; color: #fff;
-           border-bottom: 1px solid #2c333f; line-height: 1.4; }
-  .brand small { display: block; font-weight: 400; color: #8b93a1; font-size: 11px; margin-top: 4px; }
-  .nav { padding: 10px 0; flex: 1; }
-  .nav a { display: flex; align-items: center; gap: 10px; padding: 12px 20px; color: #c8ccd4;
-           text-decoration: none; cursor: pointer; border-left: 3px solid transparent; }
-  .nav a:hover { background: #262d3a; color: #fff; }
-  .nav a.active { background: #2b3442; color: #fff; border-left-color: #4c8dff; }
-  .nav .badge { background: #3a4454; border-radius: 10px; padding: 1px 8px; font-size: 11px; margin-left: auto; }
-  .sidebar .foot { padding: 14px 20px; font-size: 11px; color: #6b7382; border-top: 1px solid #2c333f; }
-  .main { flex: 1; padding: 22px 28px; overflow: auto; }
-  h1 { font-size: 19px; margin: 0 0 4px; }
-  .sub { color: #6b7382; margin-bottom: 18px; font-size: 12px; }
-  .card { background: #fff; border: 1px solid #e4e7ec; border-radius: 10px; padding: 18px 20px;
-          margin-bottom: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
-  .card h2 { font-size: 14px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
-  .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
-  .field label { font-size: 12px; color: #475467; font-weight: 500; }
-  .field input[type=text], .field input[type=number], .field select {
-      padding: 7px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; outline: none; }
-  .field input:focus, .field select:focus { border-color: #4c8dff; box-shadow: 0 0 0 3px rgba(76,141,255,.12); }
-  .field .hint { font-size: 11px; color: #98a2b3; }
-  .switch { display: flex; align-items: center; gap: 8px; }
-  .switch input { width: 16px; height: 16px; }
-  button { padding: 8px 16px; border: 1px solid #d0d5dd; background: #fff; border-radius: 7px;
-           font-size: 13px; cursor: pointer; color: #344054; }
-  button:hover { background: #f9fafb; }
-  button.primary { background: #3b6fe0; border-color: #3b6fe0; color: #fff; }
-  button.primary:hover { background: #325fc7; }
-  button.danger { color: #b42318; border-color: #fecdca; }
-  button.small { padding: 4px 10px; font-size: 12px; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .row-actions { margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef0f3; }
-  th { color: #667085; font-weight: 600; background: #fafbfc; }
-  tr:hover td { background: #fafbfc; }
-  code { background: #f2f4f7; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-  .pill.done { background: #e7f6ec; color: #067647; }
-  .pill.running { background: #e8f0fe; color: #1a56db; }
-  .pill.pending { background: #f2f4f7; color: #667085; }
-  .pill.error { background: #fef3f2; color: #b42318; }
-  .pill.not_started { background: #f2f4f7; color: #98a2b3; }
-  .pill.stopped { background: #fff6e5; color: #b54708; }
-  .pill.interrupted { background: #fff6e5; color: #b54708; }
-  .muted { color: #98a2b3; }
-  .toast { position: fixed; right: 20px; bottom: 20px; background: #1f2430; color: #fff;
-           padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: .2s; z-index: 99; }
-  .toast.show { opacity: .95; }
-  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
-  .toolbar .spacer { flex: 1; }
-  pre.log { background: #0f1420; color: #cdd6e4; padding: 14px; border-radius: 8px; max-height: 420px;
-            overflow: auto; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
-  dialog { border: none; border-radius: 12px; padding: 0; width: min(940px, 94vw); max-height: 90vh; }
-  dialog::backdrop { background: rgba(16,24,40,.45); }
-  .dlg-head { padding: 16px 20px; border-bottom: 1px solid #eef0f3; display: flex; align-items: center; gap: 10px; }
-  .dlg-head h3 { margin: 0; font-size: 15px; flex: 1; }
-  .dlg-body { padding: 18px 20px; overflow: auto; max-height: 74vh; }
-  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 12.5px; margin-bottom: 14px; }
-  .kv .k { color: #667085; }
-  .kv .v { color: #1f2430; word-break: break-all; }
-  .proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
-  .proj-card { border: 1px solid #e4e7ec; border-radius: 10px; padding: 16px; background: #fff; }
-  .proj-card h3 { margin: 0 0 6px; font-size: 14px; }
-  .proj-card .meta { font-size: 12px; color: #667085; margin-bottom: 10px; }
-  .proj-card .bar { height: 6px; border-radius: 3px; background: #eef0f3; overflow: hidden; margin: 8px 0; }
-  .proj-card .bar > div { height: 100%; background: #3b6fe0; }
-  .back { font-size: 13px; color: #3b6fe0; cursor: pointer; margin-bottom: 12px; display: inline-block; }
+  :root{
+    --bg:#0F172A; --card:#1B2336; --card-2:#151d2e;
+    --fg:#F8FAFC; --fg-dim:#94A3B8; --fg-mute:#64748B;
+    --primary:#1E293B; --secondary:#334155; --border:#475569;
+    --accent:#22C55E; --accent-ink:#0F172A; --accent-2:#38BDF8;
+    --destructive:#EF4444; --warn:#F59E0B;
+    --glass:rgba(255,255,255,.045); --glass-line:rgba(255,255,255,.12);
+    --radius:16px; --radius-sm:10px;
+    --shadow:0 8px 32px -12px rgba(0,0,0,.6), 0 2px 8px -4px rgba(0,0,0,.4);
+    --ease:cubic-bezier(.4,0,.2,1);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:"Fira Sans",-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--fg);font-size:14px;-webkit-font-smoothing:antialiased;
+       background-image:
+         radial-gradient(900px 500px at 12% -5%, rgba(56,189,248,.10), transparent 60%),
+         radial-gradient(800px 480px at 100% 0%, rgba(34,197,94,.08), transparent 55%);}
+  a{color:inherit}
+  .mono{font-family:"Fira Code",Menlo,Consolas,monospace;font-variant-ligatures:none}
+  .app{display:flex;min-height:100vh}
+
+  /* ---------- sidebar (glass) ---------- */
+  .sidebar{width:240px;flex:0 0 240px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
+           background:linear-gradient(180deg,rgba(21,29,46,.92),rgba(15,23,42,.92));
+           backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+           border-right:1px solid var(--glass-line)}
+  .brand{padding:22px 20px 18px}
+  .brand .logo{display:flex;align-items:center;gap:11px;font-size:15px;font-weight:600;letter-spacing:.2px;color:#fff}
+  .brand .logo .mark{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+       background:linear-gradient(135deg,var(--accent),#16A34A);
+       box-shadow:0 6px 18px -4px rgba(34,197,94,.55)}
+  .brand .logo .mark svg{width:17px;height:17px;stroke:var(--accent-ink)}
+  .brand small{display:block;color:var(--fg-mute);font-size:10.5px;margin-top:7px;letter-spacing:1.2px;text-transform:uppercase}
+  .nav{padding:6px 12px;flex:1;display:flex;flex-direction:column;gap:3px}
+  .nav a{display:flex;align-items:center;gap:11px;padding:10px 12px;color:var(--fg-dim);text-decoration:none;
+         cursor:pointer;border-radius:var(--radius-sm);font-size:13.5px;font-weight:500;
+         transition:background .18s var(--ease),color .18s var(--ease);border:1px solid transparent}
+  .nav a svg{width:17px;height:17px;stroke:currentColor;flex:0 0 17px}
+  .nav a:hover{background:var(--glass);color:#fff}
+  .nav a.active{background:linear-gradient(135deg,rgba(34,197,94,.16),rgba(56,189,248,.08));color:#fff;
+       border-color:rgba(34,197,94,.3)}
+  .nav a.active svg{stroke:var(--accent)}
+  .nav a .badge{margin-left:auto;background:var(--glass);border:1px solid var(--glass-line);border-radius:20px;
+       padding:1px 8px;font-size:10.5px;color:var(--fg-dim);min-width:20px;text-align:center}
+  .nav a.active .badge{background:rgba(34,197,94,.25);color:#fff;border-color:transparent}
+  .foot{padding:14px 20px;font-size:10.5px;color:var(--fg-mute);border-top:1px solid var(--glass-line);letter-spacing:.4px}
+
+  /* ---------- main ---------- */
+  .main{flex:1;padding:32px 40px;overflow:auto;max-width:100%}
+  .page-head{margin-bottom:24px}
+  h1{font-size:24px;margin:0 0 7px;font-weight:600;letter-spacing:-.01em;color:#fff}
+  .sub{color:var(--fg-dim);font-size:12.5px;line-height:1.6;max-width:940px}
+
+  .card{background:linear-gradient(180deg,rgba(27,35,54,.85),rgba(21,29,46,.7));
+        border:1px solid var(--glass-line);border-radius:var(--radius);padding:24px 26px;margin-bottom:18px;
+        box-shadow:var(--shadow);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+  .card h2{font-size:14px;margin:0 0 18px;display:flex;align-items:center;gap:9px;font-weight:600;color:#fff}
+  .card h2 svg{width:16px;height:16px;stroke:var(--accent)}
+  .card h2 .hint{font-weight:400;color:var(--fg-mute);font-size:11.5px;margin-left:auto;text-transform:none;letter-spacing:0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px 24px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 24px}
+  .field{display:flex;flex-direction:column;gap:7px;margin-bottom:8px}
+  .field label{font-size:12px;color:var(--fg-dim);font-weight:500}
+  .field input[type=text],.field input[type=number],.field select{
+      padding:10px 13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;
+      background:rgba(15,23,42,.6);color:var(--fg);transition:border .18s var(--ease),box-shadow .18s var(--ease);width:100%;
+      font-family:inherit}
+  .field input:focus,.field select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(34,197,94,.18);background:rgba(15,23,42,.9)}
+  .field .hint{font-size:11px;color:var(--fg-mute)}
+  .switch{display:flex;align-items:center;gap:10px;padding-top:3px}
+  .switch input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+
+  button{padding:9px 16px;border:1px solid var(--glass-line);background:var(--glass);border-radius:var(--radius-sm);
+         font-size:13px;cursor:pointer;color:#e2e8f0;font-family:inherit;font-weight:500;
+         transition:background .18s var(--ease),border .18s var(--ease),transform .08s var(--ease),box-shadow .18s var(--ease);
+         display:inline-flex;align-items:center;gap:7px;backdrop-filter:blur(6px)}
+  button svg{width:15px;height:15px;stroke:currentColor}
+  button:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.22)}
+  button:active{transform:translateY(1px)}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  button.primary{background:linear-gradient(135deg,var(--accent),#16A34A);border-color:transparent;color:var(--accent-ink);
+       font-weight:600;box-shadow:0 6px 20px -6px rgba(34,197,94,.6)}
+  button.primary:hover{background:linear-gradient(135deg,#2ee06a,#18b352)}
+  button.danger{color:#fca5a5;border-color:rgba(239,68,68,.35)}
+  button.danger:hover{background:rgba(239,68,68,.14)}
+  button.small{padding:5px 11px;font-size:12px;border-radius:8px}
+  button.small svg{width:13px;height:13px}
+  button:disabled{opacity:.35;cursor:not-allowed;box-shadow:none;transform:none}
+  button:disabled:hover{background:var(--glass);border-color:var(--glass-line)}
+  .row-actions{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:11px 13px;border-bottom:1px solid rgba(71,85,105,.35)}
+  th{color:var(--fg-mute);font-weight:600;background:rgba(15,23,42,.4);font-size:10.5px;
+     text-transform:uppercase;letter-spacing:.6px;position:sticky;top:0;backdrop-filter:blur(8px)}
+  tbody tr{transition:background .14s var(--ease)}
+  tbody tr:hover td{background:rgba(255,255,255,.03)}
+  code{background:rgba(15,23,42,.7);border:1px solid rgba(71,85,105,.3);padding:1.5px 7px;border-radius:6px;
+       font-size:11.5px;color:#7dd3fc;font-family:"Fira Code",Menlo,Consolas,monospace}
+  .muted{color:var(--fg-mute)}
+
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;
+        font-size:11px;font-weight:600;border:1px solid transparent}
+  .pill:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9}
+  .pill.done{background:rgba(34,197,94,.16);color:#4ade80;border-color:rgba(34,197,94,.3)}
+  .pill.running{background:rgba(56,189,248,.16);color:#7dd3fc;border-color:rgba(56,189,248,.3)}
+  .pill.pending{background:rgba(148,163,184,.14);color:#cbd5e1}
+  .pill.error{background:rgba(239,68,68,.16);color:#fca5a5;border-color:rgba(239,68,68,.3)}
+  .pill.not_started{background:rgba(148,163,184,.1);color:var(--fg-mute)}
+  .pill.stopped,.pill.interrupted{background:rgba(245,158,11,.16);color:#fcd34d;border-color:rgba(245,158,11,.3)}
+
+  .toast{position:fixed;right:26px;bottom:26px;background:rgba(21,29,46,.96);color:#fff;padding:13px 19px;
+         border-radius:12px;font-size:13px;opacity:0;transform:translateY(10px);border:1px solid var(--glass-line);
+         transition:opacity .25s var(--ease),transform .25s var(--ease);z-index:200;
+         box-shadow:0 16px 40px -10px rgba(0,0,0,.6);max-width:440px;backdrop-filter:blur(12px)}
+  .toast.show{opacity:1;transform:none}
+
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
+  .toolbar .spacer{flex:1}
+
+  pre.log{background:rgba(9,14,26,.92);color:#cbd5e1;padding:16px;border-radius:12px;max-height:440px;
+          overflow:auto;font-size:12px;line-height:1.6;white-space:pre-wrap;border:1px solid var(--glass-line);
+          font-family:"Fira Code",Menlo,Consolas,monospace}
+
+  dialog{border:1px solid var(--glass-line);border-radius:18px;padding:0;width:min(1000px,94vw);max-height:92vh;
+         background:linear-gradient(180deg,#1B2336,#141c2d);color:var(--fg);
+         box-shadow:0 40px 90px -24px rgba(0,0,0,.75)}
+  dialog::backdrop{background:rgba(9,14,26,.7);backdrop-filter:blur(4px)}
+  .dlg-head{padding:19px 24px;border-bottom:1px solid var(--glass-line);display:flex;align-items:center;gap:12px}
+  .dlg-head h3{margin:0;font-size:16px;flex:1;font-weight:600;color:#fff}
+  .dlg-body{padding:22px 24px;overflow:auto;max-height:76vh}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:9px 14px;font-size:12.5px;margin-bottom:18px}
+  .kv .k{color:var(--fg-mute)}
+  .kv .v{color:var(--fg);word-break:break-all}
+
+  .proj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}
+  .proj-card{border:1px solid var(--glass-line);border-radius:var(--radius);padding:20px;
+             background:linear-gradient(180deg,rgba(27,35,54,.8),rgba(21,29,46,.65));box-shadow:var(--shadow);
+             transition:box-shadow .22s var(--ease),transform .12s var(--ease),border-color .22s var(--ease)}
+  .proj-card:hover{box-shadow:0 16px 40px -12px rgba(0,0,0,.65);border-color:rgba(34,197,94,.28);transform:translateY(-2px)}
+  .proj-card h3{margin:0 0 8px;font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:8px}
+  .proj-card h3 svg{width:16px;height:16px;stroke:var(--accent)}
+  .proj-card .meta{font-size:12px;color:var(--fg-dim);margin-bottom:13px}
+  .proj-card .bar{height:7px;border-radius:4px;background:rgba(15,23,42,.7);overflow:hidden;margin:10px 0 15px}
+  .proj-card .bar>div{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));
+       border-radius:4px;transition:width .5s var(--ease)}
+  .back{font-size:13px;color:var(--accent-2);cursor:pointer;margin-bottom:16px;display:inline-flex;
+        align-items:center;gap:6px;font-weight:500;transition:color .15s var(--ease)}
+  .back svg{width:15px;height:15px;stroke:currentColor}
+  .back:hover{color:#7dd3fc}
+
+  /* charts */
+  .chart-row{display:flex;gap:18px;margin:16px 0;flex-wrap:wrap}
+  .chart-box{flex:1;min-width:280px;background:rgba(15,23,42,.5);border:1px solid var(--glass-line);
+             border-radius:14px;padding:16px}
+  .chart-box h4{font-size:12px;color:var(--fg-dim);margin:0 0 10px;font-weight:600}
+  .chart-svg{width:100%;height:155px;display:block}
+  .sla-pass{background:rgba(34,197,94,.07)!important}
+  .sla-fail{background:rgba(239,68,68,.07)!important}
+  .summary-bar{display:flex;gap:14px;margin:16px 0;flex-wrap:wrap}
+  .summary-stat{background:rgba(15,23,42,.5);border:1px solid var(--glass-line);border-radius:14px;padding:14px 20px;
+       text-align:center;min-width:108px;flex:1}
+  .summary-stat .val{font-size:24px;font-weight:700;color:#fff;letter-spacing:-.02em;font-family:"Fira Code",monospace}
+  .summary-stat .lbl{font-size:11px;color:var(--fg-mute);margin-top:4px}
+  .summary-stat.pass .val{color:#4ade80}
+  .summary-stat.fail .val{color:#fca5a5}
+  .elapsed{font-size:11px;color:var(--accent-2);font-weight:600;font-family:"Fira Code",monospace}
+
+  .empty{text-align:center;padding:60px 20px;color:var(--fg-mute)}
+  .empty .big{width:52px;height:52px;margin:0 auto 16px;opacity:.4}
+  .empty .big svg{width:52px;height:52px;stroke:currentColor}
+
+  /* markdown */
+  .md{font-size:13px;line-height:1.7;color:#e2e8f0}
+  .md h1{font-size:20px;margin:6px 0 16px;color:#fff}
+  .md h2{font-size:15px;margin:22px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--glass-line);color:#fff}
+  .md table{margin:12px 0;font-size:12px}
+  .md code{font-size:11.5px}
+  .md ul{margin:8px 0;padding-left:20px}
+  .md li{margin:4px 0}
+  .md .md-pass{color:#4ade80;font-weight:700}
+  .md .md-fail{color:#fca5a5;font-weight:700}
+  .md .md-warn{color:#fcd34d;font-weight:700}
+  .md .md-skip{color:var(--fg-mute);font-weight:600}
+
+  .skeleton{height:16px;border-radius:6px;background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.12),rgba(255,255,255,.05));
+       background-size:200% 100%;animation:sk 1.4s ease-in-out infinite}
+  @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+  }
+  @media(max-width:900px){
+    .grid2,.grid3{grid-template-columns:1fr}
+    .sidebar{width:68px;flex:0 0 68px}
+    .brand .logo span:not(.mark),.brand small,.nav a span:not(.ico):not(.badge),.foot{display:none}
+    .nav a{justify-content:center}.main{padding:20px}
+  }
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
-    <div class="brand">evalscope 摸高测试<small>SLA Peak Search Console</small></div>
+    <div class="brand">
+      <div class="logo"><span class="mark" id="brand-icon"></span><span>evalscope 控制台</span></div>
+      <small>Serving Test Console</small>
+    </div>
     <nav class="nav" id="nav">
-      <a data-view="config" class="active">⚙️ 配置项</a>
-      <a data-view="cases">🧪 测试用例 <span class="badge" id="badge-cases">-</span></a>
-      <a data-view="projects">📦 测试工程 <span class="badge" id="badge-projects">-</span></a>
+      <a data-view="config" class="active"><span class="ico" data-ic="settings"></span><span>配置项</span></a>
+      <a data-view="cases"><span class="ico" data-ic="flask"></span><span>测试用例</span><span class="badge" id="badge-cases">-</span></a>
+      <a data-view="projects"><span class="ico" data-ic="package"></span><span>测试工程</span><span class="badge" id="badge-projects">-</span></a>
+      <a data-view="functional"><span class="ico" data-ic="compass"></span><span>功能测试</span></a>
+      <a data-view="accuracy"><span class="ico" data-ic="target"></span><span>精度测试</span></a>
     </nav>
-    <div class="foot">后端: FastAPI · 端口 8300</div>
+    <div class="foot">FastAPI · 端口 8300</div>
   </aside>
   <main class="main" id="main"></main>
 </div>
@@ -102,7 +233,40 @@
   <div class="dlg-body" id="dlg-body"></div></dialog>
 
 <script>
+/* ---------- Lucide-style inline SVG icons ---------- */
+const ICONS = {
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  flask:'<path d="M9 3h6"/><path d="M10 3v6.5L4.5 18a2 2 0 0 0 1.7 3h11.6a2 2 0 0 0 1.7-3L14 9.5V3"/><path d="M6.5 15h11"/>',
+  package:'<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  compass:'<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
+  target:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  bolt:'<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+  play:'<polygon points="6 3 20 12 6 21 6 3"/>',
+  stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>',
+  refresh:'<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polygon points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  search:'<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  plus:'<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  save:'<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  plug:'<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v3a6 6 0 0 1-12 0V8z"/>',
+  trash:'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  doc:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+  eye:'<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
+  list:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  arrowLeft:'<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  check:'<polyline points="20 6 9 17 4 12"/>'
+};
+function icon(name, cls){
+  const p = ICONS[name] || ICONS.bolt;
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'+(cls?' class="'+cls+'"':'')+'>'+p+'</svg>';
+}
+function iconEl(name, cls){ const s=document.createElement('span'); s.style.display='inline-flex'; s.innerHTML=icon(name,cls); return s.firstChild; }
+/* fill nav icons */
+document.getElementById('brand-icon').innerHTML=icon('bolt');
+document.querySelectorAll('.nav .ico').forEach(sp=>{ sp.innerHTML=icon(sp.dataset.ic); });
+
 const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const el = (t, a={}, ...kids) => {
   const e = document.createElement(t);
   for (const k in a) {
@@ -115,458 +279,697 @@ const el = (t, a={}, ...kids) => {
   for (const k of kids) e.append(k);
   return e;
 };
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 2600); }
-async function api(path, opts={}) {
-  const r = await fetch(path, { headers: {'Content-Type':'application/json'}, ...opts });
+function btn(label, ic, cls, onclick){ return el('button',{cls:cls||'',onclick}, iconEl(ic), el('span',{},label)); }
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),3000); }
+async function api(path, opts={}){
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
   return await r.json();
 }
 const STATUS_CN = { done:'已完成', running:'进行中', pending:'排队中', error:'失败',
   not_started:'未开始', stopped:'已停止', interrupted:'已中断' };
-function pill(s) { return '<span class="pill ' + (s||'not_started') + '">' + (STATUS_CN[s]||s||'未开始') + '</span>'; }
+function pill(s){ return '<span class="pill '+(s||'not_started')+'">'+(STATUS_CN[s]||s||'未开始')+'</span>'; }
 const kfmt = n => (n && n % 1024 === 0) ? (n/1024)+'k' : n;
 const hitfmt = h => (h===0||h==null) ? '0%' : (h*100).toFixed(0)+'%';
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-let VIEW = 'config';
-let CURRENT_PROJECT = null;   // 打开中的工程 id
+/* ---- SVG bar chart (dark) ---- */
+function barChart(data, opts={}){
+  const {w=320,h=155,color='#38BDF8',threshold=null,labelFmt=v=>v} = opts;
+  if(!data.length) return '<span class="muted">无数据</span>';
+  const vals = data.map(d=>d.val).filter(v=>v!=null&&v>=0);
+  if(!vals.length) return '<span class="muted">无数据</span>';
+  const maxV = Math.max(...vals, threshold||0)*1.18 || 1;
+  const barW = Math.max(8,(w-34)/data.length-8);
+  const x0=32,y0=h-22;
+  let bars='';
+  data.forEach((d,i)=>{
+    const v=d.val; if(v==null) return;
+    const x=x0+i*(barW+8);
+    const bh=maxV>0?(v/maxV)*(y0-14):0;
+    const y=y0-bh;
+    const over = threshold && v>threshold;
+    const fill = (d.fail||over)?'#EF4444':color;
+    bars += `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" fill="${fill}" rx="3"/>`;
+    bars += `<text x="${x+barW/2}" y="${y0+15}" text-anchor="middle" font-size="10" fill="#64748B" font-family="Fira Code,monospace">${esc(d.label)}</text>`;
+    bars += `<text x="${x+barW/2}" y="${y-5}" text-anchor="middle" font-size="9.5" fill="#94A3B8" font-family="Fira Code,monospace">${labelFmt(v)}</text>`;
+  });
+  let thLine='';
+  if(threshold && maxV>0){
+    const ty=y0-(threshold/maxV)*(y0-14);
+    thLine=`<line x1="${x0}" y1="${ty}" x2="${w-8}" y2="${ty}" stroke="#EF4444" stroke-dasharray="5,4" stroke-width="1.3"/>`
+      +`<text x="${w-8}" y="${ty-4}" text-anchor="end" font-size="9.5" fill="#fca5a5" font-family="Fira Code,monospace">SLA ${labelFmt(threshold)}</text>`;
+  }
+  return `<svg class="chart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${bars}${thLine}</svg>`;
+}
+function exportCSV(rows, filename){
+  if(!rows||!rows.length) return;
+  const cols=Object.keys(rows[0]);
+  const csv=[cols.join(',')].concat(rows.map(r=>cols.map(c=>{
+    const v=r[c]; return v==null?'':/[\",\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':v;
+  }).join(','))).join('\n');
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename;
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+function elapsed(started, finished){
+  if(!started) return '';
+  const end=finished?new Date(finished):new Date();
+  const s=Math.round((end-new Date(started))/1000);
+  if(s<60) return s+'s';
+  return Math.floor(s/60)+'m'+(s%60)+'s';
+}
+/* minimal markdown renderer */
+function renderMD(md){
+  const lines = String(md||'').split('\n');
+  let html='', inTable=false, inList=false;
+  const closeAll=()=>{ if(inTable){html+='</tbody></table>';inTable=false;} if(inList){html+='</ul>';inList=false;} };
+  for(let i=0;i<lines.length;i++){
+    let ln=lines[i];
+    if(/^\s*\|.*\|\s*$/.test(ln)){
+      const cells=ln.trim().replace(/^\||\|$/g,'').split('|').map(s=>s.trim());
+      if(i+1<lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i+1])){
+        closeAll(); html+='<table><thead><tr>'+cells.map(c=>'<th>'+mdInline(c)+'</th>').join('')+'</tr></thead><tbody>'; inTable=true; i++; continue;
+      }
+      if(inTable){ html+='<tr>'+cells.map(c=>'<td>'+mdInline(c)+'</td>').join('')+'</tr>'; continue; }
+    } else if(inTable){ closeAll(); }
+    let m;
+    if((m=ln.match(/^(#{1,6})\s+(.*)$/))){ closeAll(); const lv=m[1].length; html+=`<h${lv}>`+mdInline(m[2])+`</h${lv}>`; continue; }
+    if((m=ln.match(/^\s*[-*]\s+(.*)$/))){ if(!inList){closeAll();html+='<ul>';inList=true;} html+='<li>'+mdInline(m[1])+'</li>'; continue; }
+    else if(inList){ closeAll(); }
+    if(!ln.trim()){ closeAll(); continue; }
+    html+='<p>'+mdInline(ln)+'</p>';
+  }
+  closeAll();
+  return '<div class="md">'+html+'</div>';
+}
+function mdInline(s){
+  s=esc(s);
+  s=s.replace(/`([^`]+)`/g,'<code>$1</code>');
+  s=s.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+  s=s.replace(/\b(PASS)\b/g,'<span class="md-pass">$1</span>');
+  s=s.replace(/\b(FAIL)\b/g,'<span class="md-fail">$1</span>');
+  s=s.replace(/\b(WARN)\b/g,'<span class="md-warn">$1</span>');
+  s=s.replace(/\b(SKIP)\b/g,'<span class="md-skip">$1</span>');
+  return s;
+}
 
-/* ============================ 配置项视图 ============================ */
-async function renderConfig() {
+let VIEW='config';
+let CURRENT_PROJECT=null;
+let PROJECT_BEST={};
+
+/* ============================ 配置项 ============================ */
+async function renderConfig(){
   const cfg = await api('/api/config');
-  const m = $('#main'); m.innerHTML = '';
-  m.append(el('h1', {}, '配置项'));
-  m.append(el('div', {cls:'sub'}, '配置被测服务与摸高参数；保存后写入 web_state.json（不覆盖 config.yaml 注释）'));
-
-  const svc = cfg.service||{}, req = cfg.request||{}, bench = cfg.benchmark||{};
-  const card = el('div', {cls:'card'});
-  card.append(el('h2', {}, '🔌 服务配置'));
-  const g = el('div', {cls:'grid2'});
-  g.append(field('服务 URL', 'url', svc.url||'', '完整 chat completions 路径'));
-  g.append(field('模型名 (model)', 'model', svc.model||'', '服务端 served model 名'));
-  g.append(field('Tokenizer 路径', 'tokenizer_path', svc.tokenizer_path||'', '模型权重路径（长度过滤/数据集生成用）'));
-  g.append(field('API Key（可选）', 'api_key', req.api_key||'', '设置后自动加 Authorization: Bearer'));
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'配置项'),
+    el('div',{cls:'sub'},'配置被测服务与请求头参数；保存后写入 web_state.json（不覆盖 config.yaml 注释）。摸高参数已移至「测试用例」页签')));
+  const svc=cfg.service||{}, req=cfg.request||{};
+  const card=el('div',{cls:'card'});
+  card.append(el('h2',{}, iconEl('plug'), el('span',{},'服务配置')));
+  const g=el('div',{cls:'grid2'});
+  g.append(field('服务 URL','url',svc.url||'','完整 chat completions 路径'));
+  g.append(field('模型名 (model)','model',svc.model||'','服务端 served model 名'));
+  g.append(field('Tokenizer 路径','tokenizer_path',svc.tokenizer_path||'','模型权重路径（长度过滤/数据集生成用）'));
+  g.append(field('API Key（可选）','api_key',req.api_key||'','设置后自动加 Authorization'));
   card.append(g);
-
-  card.append(el('h2', {style:'margin-top:18px'}, '🌐 请求头 / Host'));
-  const hg = el('div', {cls:'grid2'});
-  const hostChk = el('div', {cls:'field'});
-  hostChk.innerHTML = '<label>请求头加 Host 参数</label>'
-    + '<div class="switch"><input type="checkbox" id="addhost" ' + (req.add_host_header?'checked':'') + '>'
-    + '<span class="hint">LB/网关按域名路由时开启</span></div>';
+  card.append(el('h2',{style:'margin-top:22px'}, iconEl('compass'), el('span',{},'请求头 / Host')));
+  const hg=el('div',{cls:'grid2'});
+  const hostChk=el('div',{cls:'field'});
+  hostChk.innerHTML='<label>请求头加 Host 参数</label>'
+    +'<div class="switch"><input type="checkbox" id="addhost" '+(req.add_host_header?'checked':'')+'>'
+    +'<span class="hint">LB/网关按域名路由时开启</span></div>';
   hg.append(hostChk);
-  hg.append(field('Host 值', 'host_header', req.host_header||'', '留空 = 自动取 URL 主机名'));
-  hg.append(field('额外请求头', 'extra_headers', (req.extra_headers||[]).join(', '), '逗号分隔，如 Authorization=Bearer xxx'));
+  hg.append(field('Host 值','host_header',req.host_header||'','留空 = 自动取 URL 主机名'));
+  hg.append(field('额外请求头','extra_headers',(req.extra_headers||[]).join(', '),'逗号分隔，如 Authorization=Bearer xxx'));
   card.append(hg);
-  card.append(el('div', {cls:'hint', style:'margin-top:6px'},
-    '生效请求头: ' + ((cfg.host_header_effective||[]).join(' | ') || '（无）')));
-
-  card.append(el('h2', {style:'margin-top:18px'}, '🎯 摸高参数'));
-  const bg = el('div', {cls:'grid2'});
-  bg.append(field('并发下界', 'sla_lower_bound', bench.sla_lower_bound, '', 'number'));
-  bg.append(field('并发上界', 'sla_upper_bound', bench.sla_upper_bound, '', 'number'));
-  bg.append(field('每档轮数', 'sla_num_runs', bench.sla_num_runs, '', 'number'));
-  bg.append(field('请求数倍数', 'number_multiplier', bench.number_multiplier, '请求数 = 并发 × 倍数', 'number'));
-  bg.append(field('warmup 请求数', 'warmup_num', bench.warmup_num, '', 'number'));
-  bg.append(field('worker 进程数', 'num_workers', bench.num_workers||0, '0=自动，内存受限机器设 1', 'number'));
-  card.append(bg);
-
-  const actions = el('div', {cls:'row-actions'});
-  actions.append(el('button', {cls:'primary', onclick: saveConfig}, '💾 保存服务配置'));
-  actions.append(el('button', {onclick: renderConfig}, '重置'));
+  card.append(el('div',{cls:'hint',style:'margin-top:8px;color:var(--fg-mute)'},
+    '生效请求头: '+((cfg.host_header_effective||[]).join(' | ')||'（无）')));
+  const actions=el('div',{cls:'row-actions'});
+  actions.append(btn('保存服务配置','save','primary',saveConfig));
+  const tb=btn('测试连接','plug','',testConnection); tb.id='btn-testconn'; actions.append(tb);
+  actions.append(btn('重置','refresh','',renderConfig));
   card.append(actions);
   m.append(card);
 }
-
-function field(label, id, val, hint='', type='text') {
-  const f = el('div', {cls:'field'});
-  f.innerHTML = '<label>'+label+'</label>'
-    + '<input type="'+type+'" id="cfg-'+id+'" value="'+(val===undefined||val===null?'':val)+'">'
-    + (hint?('<span class="hint">'+hint+'</span>'):'');
+async function testConnection(){
+  const url=$('#cfg-url').value;
+  if(!url){ toast('请先填写服务 URL'); return; }
+  const b=$('#btn-testconn'); if(b){ b.disabled=true; }
+  const base=url.replace(/\/v1\/.*$/,'');
+  try{
+    const r=await fetch(base+'/v1/models',{signal:AbortSignal.timeout(8000)});
+    if(r.ok){ const d=await r.json(); const models=(d.data||[]).map(x=>x.id).join(', ');
+      toast('连接成功，模型: '+(models||'(空)')); }
+    else toast('服务响应 '+r.status+'（可能需要认证）');
+  }catch(e){ toast('连接失败: '+(e.name==='TimeoutError'?'超时':e.message)); }
+  if(b) b.disabled=false;
+}
+function field(label,id,val,hint='',type='text'){
+  const f=el('div',{cls:'field'});
+  f.innerHTML='<label>'+label+'</label>'
+    +'<input type="'+type+'" id="cfg-'+id+'" value="'+(val===undefined||val===null?'':esc(val))+'" step="any">'
+    +(hint?('<span class="hint">'+hint+'</span>'):'');
   return f;
 }
-
-async function saveConfig() {
-  const payload = {
-    service: { url: $('#cfg-url').value, model: $('#cfg-model').value,
-               tokenizer_path: $('#cfg-tokenizer_path').value },
-    request: { add_host_header: $('#addhost').checked, host_header: $('#cfg-host_header').value,
-               api_key: $('#cfg-api_key').value,
-               extra_headers: $('#cfg-extra_headers').value.split(',').map(x=>x.trim()).filter(Boolean) },
-    benchmark: { sla_lower_bound: +$('#cfg-sla_lower_bound').value,
-                 sla_upper_bound: +$('#cfg-sla_upper_bound').value,
-                 sla_num_runs: +$('#cfg-sla_num_runs').value,
-                 number_multiplier: +$('#cfg-number_multiplier').value,
-                 warmup_num: +$('#cfg-warmup_num').value,
-                 num_workers: +$('#cfg-num_workers').value }
+async function saveConfig(){
+  const payload={
+    service:{ url:$('#cfg-url').value, model:$('#cfg-model').value, tokenizer_path:$('#cfg-tokenizer_path').value },
+    request:{ add_host_header:$('#addhost').checked, host_header:$('#cfg-host_header').value,
+              api_key:$('#cfg-api_key').value,
+              extra_headers:$('#cfg-extra_headers').value.split(',').map(x=>x.trim()).filter(Boolean) }
   };
-  const r = await api('/api/config', {method:'POST', body: JSON.stringify(payload)});
-  toast(r.ok ? '服务配置已保存' : '保存失败');
-  renderConfig();
+  const r=await api('/api/config',{method:'POST',body:JSON.stringify(payload)});
+  toast(r.ok?'服务配置已保存':'保存失败'); renderConfig();
+}
+async function saveBenchmark(){
+  const payload={
+    benchmark:{ sla_lower_bound:+$('#cfg-sla_lower_bound').value, sla_upper_bound:+$('#cfg-sla_upper_bound').value,
+                sla_num_runs:+$('#cfg-sla_num_runs').value, number_multiplier:+$('#cfg-number_multiplier').value,
+                warmup_num:+$('#cfg-warmup_num').value, num_workers:+$('#cfg-num_workers').value }
+  };
+  const r=await api('/api/config',{method:'POST',body:JSON.stringify(payload)});
+  toast(r.ok?'摸高参数已保存':'保存失败');
 }
 
-/* ============================ 测试用例视图 ============================ */
-async function renderCases() {
-  const {cases} = await api('/api/cases');
-  const m = $('#main'); m.innerHTML = '';
-  m.append(el('h1', {}, '测试用例'));
-  m.append(el('div', {cls:'sub'},
-    '用例即一个固定测试场景；数据集条数在添加用例时固化（要改条数请新增用例）；「检测数据集是否生成」仅刷新状态列，生成需逐用例点击「生成」'));
-
-  const bar = el('div', {cls:'toolbar'});
-  bar.append(el('button', {cls:'primary', onclick: detectDatasets}, '🔍 检测数据集是否生成'));
-  bar.append(el('span', {cls:'spacer'}));
-  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderCases()}}, '刷新')));
+/* ============================ 测试用例 ============================ */
+async function renderCases(){
+  const [casesRes, cfgRes] = await Promise.all([api('/api/cases'), api('/api/config')]);
+  const cases = casesRes.cases;
+  const bench = (cfgRes.benchmark)||{};
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'测试用例'),
+    el('div',{cls:'sub'},'用例即一个固定测试场景；数据集条数在添加用例时固化（要改条数请新增用例）；「检测数据集是否生成」仅刷新状态列，生成需逐用例点击「生成」')));
+  const bar=el('div',{cls:'toolbar'});
+  bar.append(btn('检测数据集是否生成','search','primary',detectDatasets));
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','',renderCases));
   m.append(bar);
-
-  const card = el('div', {cls:'card'});
-  card.append(el('h2', {}, '📋 用例列表（' + cases.length + '）'));
-  const tb = el('table');
-  tb.innerHTML = '<thead><tr><th>启用</th><th>用例 ID</th><th>数据集</th><th>输入</th>'
-    + '<th>输出</th><th>命中</th><th>TTFT SLA</th><th>TPOT SLA</th>'
-    + '<th>数据集条数</th><th>数据集状态</th><th>操作</th></tr></thead>';
-  const tbody = el('tbody');
-  cases.forEach(c => {
-    const tr = el('tr');
-    tr.dataset.id = c.id;
-    const genSt = c.dataset_gen_status || 'idle';
-    const genErr = c.dataset_gen_error;
-    const isGen = genSt === 'generating';
-    const genLabel = isGen ? '生成中…' : (c.dataset_exists ? '重新生成' : '生成');
-    const dsCell = (c.dataset === 'gsm8k')
-      ? ((c.dataset_num||'默认') + ' '
-        + '<button class="small" data-gen="' + c.id + '"' + (isGen?' disabled':'') + '>' + genLabel + '</button>')
+  const card=el('div',{cls:'card'});
+  card.append(el('h2',{}, iconEl('flask'), el('span',{},'用例列表'), el('span',{cls:'hint'}, cases.length+' 个')));
+  const wrap=el('div',{style:'overflow:auto;max-height:520px'});
+  const tb=el('table');
+  tb.innerHTML='<thead><tr><th>启用</th><th>用例 ID</th><th>数据集</th><th>输入</th>'
+    +'<th>输出</th><th>命中</th><th>TTFT SLA</th><th>TPOT SLA</th>'
+    +'<th>数据集条数</th><th>数据集状态</th><th>操作</th></tr></thead>';
+  const tbody=el('tbody');
+  cases.forEach(c=>{
+    const tr=el('tr'); tr.dataset.id=c.id;
+    const genSt=c.dataset_gen_status||'idle', genErr=c.dataset_gen_error;
+    const isGen=genSt==='generating';
+    const genLabel=isGen?'生成中…':(c.dataset_exists?'重新生成':'生成');
+    const dsCell=(c.dataset==='gsm8k')
+      ? ('<span class="mono">'+(c.dataset_num||'默认')+'</span> <button class="small" data-gen="'+c.id+'"'+(isGen?' disabled':'')+'>'+genLabel+'</button>')
       : '<span class="muted">—</span>';
     let stCell;
-    if (c.dataset === 'gsm8k') {
-      if (isGen) stCell = '<span class="pill running">生成中</span>';
-      else if (genSt === 'error') stCell = '<span class="pill error" title="' + (genErr||'') + '">生成失败</span>';
-      else if (c.dataset_exists) stCell = '<span class="pill done">已生成</span>' + (c.dataset_shared?' <span class="muted">复用</span>':'');
-      else stCell = '<span class="pill not_started">未生成</span>';
-    } else stCell = '<span class="muted">在线生成</span>';
-    tr.innerHTML =
-      '<td><input type="checkbox" class="en" ' + (c.enabled!==false?'checked':'') + '></td>'
-      + '<td><code>' + c.id + '</code></td>'
-      + '<td>' + c.dataset + '</td>'
-      + '<td>' + kfmt(c.input_len) + '</td>'
-      + '<td>' + kfmt(c.output_len) + '</td>'
-      + '<td>' + hitfmt(c.hit_rate) + '</td>'
-      + '<td>' + c.ttft_sla_ms + ' ms</td>'
-      + '<td>' + c.tpot_sla_ms + ' ms</td>'
-      + '<td>' + dsCell + '</td>'
-      + '<td>' + stCell + '</td>'
-      + '<td><button class="small danger" data-del="' + c.id + '">删除</button></td>';
+    if(c.dataset==='gsm8k'){
+      if(isGen) stCell='<span class="pill running">生成中</span>';
+      else if(genSt==='error') stCell='<span class="pill error" title="'+esc(genErr||'')+'">生成失败</span>';
+      else if(c.dataset_exists) stCell='<span class="pill done">已生成</span>'+(c.dataset_shared?' <span class="muted">复用</span>':'');
+      else stCell='<span class="pill not_started">未生成</span>';
+    } else stCell='<span class="muted">在线生成</span>';
+    tr.innerHTML=
+      '<td><input type="checkbox" class="en" '+(c.enabled!==false?'checked':'')+'></td>'
+      +'<td><code>'+esc(c.id)+'</code></td>'
+      +'<td>'+esc(c.dataset)+'</td>'
+      +'<td class="mono">'+kfmt(c.input_len)+'</td>'
+      +'<td class="mono">'+kfmt(c.output_len)+'</td>'
+      +'<td>'+hitfmt(c.hit_rate)+'</td>'
+      +'<td class="mono">'+c.ttft_sla_ms+' ms</td>'
+      +'<td class="mono">'+c.tpot_sla_ms+' ms</td>'
+      +'<td>'+dsCell+'</td>'
+      +'<td>'+stCell+'</td>'
+      +'<td><button class="small danger" data-del="'+c.id+'">删除</button></td>';
     tbody.append(tr);
   });
-  tb.append(tbody);
-  card.append(tb);
-  card.append(el('div', {cls:'row-actions'},
-    el('button', {cls:'primary', onclick: saveCases}, '💾 保存用例（启停 / 条数）')));
+  tb.append(tbody); wrap.append(tb); card.append(wrap);
+  card.append(el('div',{cls:'row-actions'}, btn('保存用例（启停）','save','primary',saveCases)));
   m.append(card);
 
-  const addCard = el('div', {cls:'card'});
-  addCard.append(el('h2', {}, '➕ 添加测试用例'));
-  addCard.append(el('div', {cls:'grid2', html:
+  /* 摸高参数（从配置项页签移入） */
+  const benchCard=el('div',{cls:'card'});
+  benchCard.append(el('h2',{}, iconEl('target'), el('span',{},'摸高参数'),
+    el('span',{cls:'hint'}, '所有用例共用的二分摸高范围与请求数设置')));
+  const bg=el('div',{cls:'grid3'});
+  bg.append(field('并发下界','sla_lower_bound',bench.sla_lower_bound,'','number'));
+  bg.append(field('并发上界','sla_upper_bound',bench.sla_upper_bound,'','number'));
+  bg.append(field('每档轮数','sla_num_runs',bench.sla_num_runs,'','number'));
+  bg.append(field('请求数倍数','number_multiplier',bench.number_multiplier,'请求数 = 并发 × 倍数','number'));
+  bg.append(field('warmup 请求数','warmup_num',bench.warmup_num,'','number'));
+  bg.append(field('worker 进程数','num_workers',bench.num_workers||0,'0=自动，内存受限设 1','number'));
+  benchCard.append(bg);
+  benchCard.append(el('div',{cls:'row-actions'}, btn('保存摸高参数','save','primary',saveBenchmark)));
+  m.append(benchCard);
+
+  const addCard=el('div',{cls:'card'});
+  addCard.append(el('h2',{}, iconEl('plus'), el('span',{},'添加测试用例')));
+  addCard.append(el('div',{cls:'grid3',html:
     '<div class="field"><label>数据集</label><select id="nc-dataset">'
-      + '<option value="random">random</option><option value="gsm8k">gsm8k</option></select></div>'
-    + '<div class="field"><label>输入长度</label><input type="text" id="nc-in" placeholder="如 1k / 64k / 1000k"></div>'
-    + '<div class="field"><label>输出长度</label><input type="text" id="nc-out" placeholder="如 1k"></div>'
-    + '<div class="field"><label>缓存命中率</label><input type="text" id="nc-hit" placeholder="0 / 0.3 / 0.9"></div>'
-    + '<div class="field"><label>前缀数量</label><input type="number" id="nc-pnum" value="1"></div>'
-    + '<div class="field"><label>TTFT SLA (ms)</label><input type="number" id="nc-ttft" value="10000"></div>'
-    + '<div class="field"><label>TPOT SLA (ms)</label><input type="number" id="nc-tpot" value="50"></div>'
-    + '<div class="field"><label>数据集条数（gsm8k）</label><input type="number" id="nc-num" placeholder="默认 1000"></div>'}));
-  addCard.append(el('div', {cls:'row-actions'},
-    el('button', {cls:'primary', onclick: addCase}, '添加用例')));
+      +'<option value="random">random</option><option value="gsm8k">gsm8k</option></select></div>'
+    +'<div class="field"><label>输入长度</label><input type="text" id="nc-in" placeholder="如 1k / 64k / 1000k"></div>'
+    +'<div class="field"><label>输出长度</label><input type="text" id="nc-out" placeholder="如 1k"></div>'
+    +'<div class="field"><label>缓存命中率</label><input type="text" id="nc-hit" placeholder="0 / 0.3 / 0.9"></div>'
+    +'<div class="field"><label>前缀数量</label><input type="number" id="nc-pnum" value="1"></div>'
+    +'<div class="field"><label>数据集条数（gsm8k）</label><input type="number" id="nc-num" placeholder="默认 1000"></div>'
+    +'<div class="field"><label>TTFT SLA (ms)</label><input type="number" id="nc-ttft" value="10000"></div>'
+    +'<div class="field"><label>TPOT SLA (ms)</label><input type="number" id="nc-tpot" value="50"></div>'}));
+  addCard.append(el('div',{cls:'row-actions'}, btn('添加用例','plus','primary',addCase)));
   m.append(addCard);
-
-  const bc = document.getElementById('badge-cases'); if (bc) bc.textContent = cases.length;
+  const bc=document.getElementById('badge-cases'); if(bc) bc.textContent=cases.length;
 }
-
-async function saveCases() {
-  const rows = document.querySelectorAll('tbody tr[data-id]');
-  const payload = {cases: []};
-  rows.forEach(tr => {
-    payload.cases.push({id: tr.dataset.id, enabled: tr.querySelector('.en').checked});
-  });
-  const r = await api('/api/cases', {method:'POST', body: JSON.stringify(payload)});
-  toast(r.ok ? '用例已保存' : ('保存失败: ' + (r.error||'')));
-  if (r.ok) renderCases();
+async function saveCases(){
+  const rows=$$('tbody tr[data-id]');
+  const payload={cases:[]};
+  rows.forEach(tr=>payload.cases.push({id:tr.dataset.id, enabled:tr.querySelector('.en').checked}));
+  const r=await api('/api/cases',{method:'POST',body:JSON.stringify(payload)});
+  toast(r.ok?'用例已保存':('保存失败: '+(r.error||''))); if(r.ok) renderCases();
 }
-
-async function addCase() {
-  const raw = [$('#nc-dataset').value, $('#nc-in').value, $('#nc-out').value,
-    ($('#nc-hit').value||'0'), ($('#nc-pnum').value||'1'), $('#nc-ttft').value, $('#nc-tpot').value].join(', ');
-  const r = await api('/api/cases/add', {method:'POST', body: JSON.stringify({raw, dataset_num: $('#nc-num').value || null})});
-  toast(r.ok ? ('用例已添加: ' + r.case.id) : ('失败: ' + (r.error||'')));
-  if (r.ok) renderCases();
+async function addCase(){
+  const raw=[$('#nc-dataset').value,$('#nc-in').value,$('#nc-out').value,
+    ($('#nc-hit').value||'0'),($('#nc-pnum').value||'1'),$('#nc-ttft').value,$('#nc-tpot').value].join(', ');
+  const r=await api('/api/cases/add',{method:'POST',body:JSON.stringify({raw,dataset_num:$('#nc-num').value||null})});
+  toast(r.ok?('用例已添加: '+r.case.id):('失败: '+(r.error||''))); if(r.ok) renderCases();
 }
-async function delCase(id) {
-  if (!confirm('删除用例 ' + id + ' ?')) return;
-  await api('/api/cases/delete', {method:'POST', body: JSON.stringify({id})});
+async function delCase(id){
+  if(!confirm('删除用例 '+id+' ?')) return;
+  await api('/api/cases/delete',{method:'POST',body:JSON.stringify({id})});
   toast('已删除'); renderCases();
 }
-async function genCase(id) {
-  const btn = document.querySelector('[data-gen="'+id+'"]');
-  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
-  const r = await api('/api/datasets/generate', {method:'POST', body: JSON.stringify({case_ids:[id]})});
-  if (r.ok && r.count > 0) toast('开始生成数据集: ' + id);
-  else if (r.ok && r.count === 0) toast('该数据集正在生成中或已生成');
+async function genCase(id){
+  const b=document.querySelector('[data-gen="'+id+'"]');
+  if(b){ b.disabled=true; b.textContent='生成中…'; }
+  const r=await api('/api/datasets/generate',{method:'POST',body:JSON.stringify({case_ids:[id]})});
+  if(r.ok&&r.count>0) toast('开始生成数据集: '+id);
+  else if(r.ok&&r.count===0) toast('该数据集正在生成中或已生成');
   else toast('生成请求失败');
-  // 轮询状态直到非 generating
-  for (let i = 0; i < 60; i++) {
+  for(let i=0;i<90;i++){
     await new Promise(r=>setTimeout(r,2000));
-    const {cases} = await api('/api/cases');
-    const c = cases.find(x=>x.id===id);
-    if (!c || c.dataset_gen_status !== 'generating') { renderCases(); break; }
+    const {cases}=await api('/api/cases');
+    const c=cases.find(x=>x.id===id);
+    if(!c||c.dataset_gen_status!=='generating'){ renderCases(); break; }
   }
 }
-async function detectDatasets() {
-  await api('/api/cases');   // 触发后端重算数据集状态
-  renderCases();
-  toast('数据集状态已刷新');
-}
-async function genDatasets() {
-  // 兼容旧引用：不再提供“强制重新生成全部”
-}
-
-/* 用例表内的「生成」「删除」用事件委托 */
-document.addEventListener('click', e => {
-  const g = e.target.closest && e.target.closest('[data-gen]');
-  if (g) { genCase(g.dataset.gen); return; }
-  const d = e.target.closest && e.target.closest('[data-del]');
-  if (d && d.tagName === 'BUTTON') { delCase(d.dataset.del); return; }
+async function detectDatasets(){ await api('/api/cases'); renderCases(); toast('数据集状态已刷新'); }
+document.addEventListener('click', e=>{
+  const g=e.target.closest&&e.target.closest('[data-gen]');
+  if(g){ genCase(g.dataset.gen); return; }
+  const d=e.target.closest&&e.target.closest('[data-del]');
+  if(d&&d.tagName==='BUTTON'){ delCase(d.dataset.del); return; }
 });
 
-/* ============================ 测试工程视图 ============================ */
-async function renderProjects() {
-  if (CURRENT_PROJECT) return renderProjectDetail(CURRENT_PROJECT);
-  const {projects} = await api('/api/projects');
-  const m = $('#main'); m.innerHTML = '';
-  m.append(el('h1', {}, '测试工程'));
-  m.append(el('div', {cls:'sub'}, '一个工程 = 一组要测试的用例；打开工程可启动/终止其测试任务，并查看每个用例的性能结果与日志'));
-
-  const bar = el('div', {cls:'toolbar'});
-  bar.append(el('button', {cls:'primary', onclick: newProject}, '➕ 新建测试工程'));
-  bar.append(el('span', {cls:'spacer'}));
-  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderProjects()}}, '刷新')));
+/* ============================ 测试工程 ============================ */
+async function renderProjects(){
+  if(CURRENT_PROJECT) return renderProjectDetail(CURRENT_PROJECT);
+  const {projects}=await api('/api/projects');
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'测试工程'),
+    el('div',{cls:'sub'},'一个工程 = 一组要测试的用例；打开工程可启动/终止测试、查看每个用例的最优结果，并可打包下载全部日志')));
+  const bar=el('div',{cls:'toolbar'});
+  bar.append(btn('新建测试工程','plus','primary',newProject));
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','',renderProjects));
   m.append(bar);
-
-  if (!projects.length) {
-    m.append(el('div', {cls:'card'}, el('div', {cls:'muted'}, '还没有测试工程，点「新建测试工程」创建（默认纳入所有启用用例）')));
-  } else {
-    const grid = el('div', {cls:'proj-grid'});
-    projects.forEach(p => {
-      const total = p.case_count || 0;
-      const pct = total ? Math.round((p.done||0)/total*100) : 0;
-      const running = !!p.is_running;
-      const started = !!p.has_started;
-      const card = el('div', {cls:'proj-card'});
-      card.append(el('h3', {}, '📦 ' + p.name));
-      card.append(el('div', {cls:'meta'},
-        '用例 ' + total + ' · 已完成 ' + (p.done||0) + ' · 进行/排队 ' + (p.running||0) + ' · ' + (p.created||'')));
-      card.append(el('div', {cls:'bar', html:'<div style="width:'+pct+'%"></div>'}));
-      const ops = el('div', {cls:'row-actions'});
-      ops.append(el('button', {cls:'small', onclick:()=>openProject(p.id)}, '打开'));
-      const runBtn = el('button', {cls:'small primary', onclick:()=>runProject(p.id)}, '▶ 启动');
-      runBtn.disabled = running;
-      ops.append(runBtn);
-      const stopBtn = el('button', {cls:'small danger', onclick:()=>stopProject(p.id)}, '■ 终止');
-      stopBtn.disabled = !running;
-      ops.append(stopBtn);
-      const delBtn = el('button', {cls:'small danger', onclick:()=>delProject(p.id)}, '删除');
-      delBtn.disabled = running;
-      ops.append(delBtn);
+  if(!projects.length){
+    m.append(el('div',{cls:'card'}, el('div',{cls:'empty'},
+      el('div',{cls:'big',html:icon('package')}), el('div',{},'还没有测试工程，点「新建测试工程」创建（默认纳入所有启用用例）'))));
+  }else{
+    const grid=el('div',{cls:'proj-grid'});
+    projects.forEach(p=>{
+      const total=p.case_count||0;
+      const pct=total?Math.round((p.done||0)/total*100):0;
+      const running=!!p.is_running;
+      const card=el('div',{cls:'proj-card'});
+      card.append(el('h3',{}, iconEl('package'), el('span',{},esc(p.name))));
+      card.append(el('div',{cls:'meta'},
+        '用例 '+total+' · 已完成 '+(p.done||0)+' · 进行/排队 '+(p.running||0)+' · '+esc(p.created||'')));
+      card.append(el('div',{cls:'bar',html:'<div style="width:'+pct+'%"></div>'}));
+      if(p.has_started){
+        const sb=el('div',{cls:'summary-bar'});
+        sb.append(el('div',{cls:'summary-stat '+(p.done?'pass':'')}, el('div',{cls:'val'},String(p.done||0)), el('div',{cls:'lbl'},'已完成')));
+        sb.append(el('div',{cls:'summary-stat'}, el('div',{cls:'val'},String(p.running||0)), el('div',{cls:'lbl'},'进行/排队')));
+        const failN=total-(p.done||0)-(p.running||0);
+        sb.append(el('div',{cls:'summary-stat '+(failN?'fail':'')}, el('div',{cls:'val'},String(failN)), el('div',{cls:'lbl'},'未完成')));
+        card.append(sb);
+      }
+      const ops=el('div',{cls:'row-actions'});
+      ops.append(btn('打开','eye','small',()=>openProject(p.id)));
+      const runBtn=btn('启动','play','small primary',()=>runProject(p.id)); runBtn.disabled=running; ops.append(runBtn);
+      const stopBtn=btn('终止','stop','small danger',()=>stopProject(p.id)); stopBtn.disabled=!running; ops.append(stopBtn);
+      const packBtn=btn('打包','download','small',()=>packProject(p.id)); packBtn.disabled=running; ops.append(packBtn);
+      const delBtn=btn('删除','trash','small danger',()=>delProject(p.id)); delBtn.disabled=running; ops.append(delBtn);
       card.append(ops);
       grid.append(card);
     });
     m.append(grid);
   }
-  const bp = document.getElementById('badge-projects'); if (bp) bp.textContent = projects.length;
+  const bp=document.getElementById('badge-projects'); if(bp) bp.textContent=projects.length;
 }
-
-async function newProject() {
-  const {cases} = await api('/api/cases');
-  const dlg = $('#dlg');
-  $('#dlg-title').textContent = '新建测试工程';
-  const body = $('#dlg-body'); body.innerHTML = '';
-
-  body.append(el('div', {cls:'field'}, el('label', {}, '工程名称')));
-  const nameInp = el('input', {type:'text', id:'np-name', style:'width:100%'});
+async function newProject(){
+  const {cases}=await api('/api/cases');
+  const dlg=$('#dlg');
+  $('#dlg-title').textContent='新建测试工程';
+  const body=$('#dlg-body'); body.innerHTML='';
+  body.append(el('div',{cls:'field'}, el('label',{},'工程名称')));
+  const nameInp=el('input',{type:'text',id:'np-name',style:'width:100%',placeholder:'如 摸高回归-1027'});
   body.append(nameInp);
-
-  body.append(el('h3', {style:'font-size:13px;margin:14px 0 8px'}, '选择要执行的测试用例'));
-  const list = el('div', {style:'max-height:340px;overflow:auto;border:1px solid #e4e7ec;border-radius:8px;padding:8px'});
-  cases.forEach(c => {
-    const row = el('label', {style:'display:flex;gap:8px;align-items:center;padding:4px 6px;cursor:pointer'});
-    row.append(el('input', {type:'checkbox', value:c.id, checked:c.enabled!==false}));
-    row.append(el('span', {style:'font-size:12.5px'},
-      c.id + '  (' + c.dataset + ' ' + kfmt(c.input_len) + '→' + kfmt(c.output_len) + ' 命中' + hitfmt(c.hit_rate) + ')'));
+  body.append(el('h3',{style:'font-size:13px;margin:16px 0 8px;color:#fff'},'选择要执行的测试用例'));
+  const list=el('div',{style:'max-height:360px;overflow:auto;border:1px solid var(--glass-line);border-radius:10px;padding:8px'});
+  cases.forEach(c=>{
+    const row=el('label',{style:'display:flex;gap:10px;align-items:center;padding:6px 8px;cursor:pointer;border-radius:7px'});
+    row.append(el('input',{type:'checkbox',value:c.id,checked:c.enabled!==false}));
+    row.append(el('span',{style:'font-size:12.5px'},
+      esc(c.id)+'  ('+esc(c.dataset)+' '+kfmt(c.input_len)+'→'+kfmt(c.output_len)+' 命中'+hitfmt(c.hit_rate)+')'));
     list.append(row);
   });
   body.append(list);
-
-  const ops = el('div', {cls:'row-actions', style:'margin-top:14px'});
-  ops.append(el('button', {cls:'primary', onclick: async () => {
-    const name = nameInp.value.trim() || ('工程' + new Date().toLocaleTimeString());
-    const ids = [...list.querySelectorAll('input:checked')].map(x => x.value);
-    if (!ids.length) { toast('请至少勾选一个用例'); return; }
-    const r = await api('/api/projects', {method:'POST', body: JSON.stringify({name, case_ids: ids})});
+  const selBar=el('div',{cls:'row-actions',style:'margin-top:8px'});
+  selBar.append(btn('全选','check','small',()=>$$('input[type=checkbox]',list).forEach(x=>x.checked=true)));
+  selBar.append(btn('全不选','refresh','small',()=>$$('input[type=checkbox]',list).forEach(x=>x.checked=false)));
+  body.append(selBar);
+  const ops=el('div',{cls:'row-actions',style:'margin-top:16px'});
+  ops.append(btn('创建','plus','primary',async()=>{
+    const name=nameInp.value.trim()||('工程'+new Date().toLocaleTimeString());
+    const ids=$$('input:checked',list).map(x=>x.value);
+    if(!ids.length){ toast('请至少勾选一个用例'); return; }
+    const r=await api('/api/projects',{method:'POST',body:JSON.stringify({name,case_ids:ids})});
     dlg.close();
-    if (r.ok) { toast('已创建工程（' + ids.length + ' 个用例）'); renderProjects(); }
-    else toast('创建失败: ' + (r.error||''));
-  }}, '创建'));
-  ops.append(el('button', {onclick:()=>dlg.close()}, '取消'));
+    if(r.ok){ toast('已创建工程（'+ids.length+' 个用例）'); renderProjects(); }
+    else toast('创建失败: '+(r.error||''));
+  }));
+  ops.append(el('button',{onclick:()=>dlg.close()},'取消'));
   body.append(ops);
   dlg.showModal();
 }
-async function delProject(id) {
-  if (!confirm('删除该测试工程？（不影响已生成的结果）')) return;
-  await api('/api/projects/delete', {method:'POST', body: JSON.stringify({id})});
+async function delProject(id){
+  if(!confirm('删除该测试工程？（不影响已生成的结果）')) return;
+  await api('/api/projects/delete',{method:'POST',body:JSON.stringify({id})});
   toast('已删除'); renderProjects();
 }
-async function runProject(id) {
-  const r = await api('/api/projects/'+id+'/run', {method:'POST', body: JSON.stringify({})});
-  toast(r.ok ? ('已启动 ' + (r.queued||[]).length + ' 个用例') : ('启动失败: ' + (r.error||'')));
+async function runProject(id){
+  const r=await api('/api/projects/'+id+'/run',{method:'POST',body:JSON.stringify({})});
+  toast(r.ok?('已启动 '+(r.queued||[]).length+' 个用例'):('启动失败: '+(r.error||'')));
+  if(CURRENT_PROJECT===id) setTimeout(()=>renderProjectDetail(id),700);
 }
-async function stopProject(id) {
-  await api('/api/projects/'+id+'/stop', {method:'POST', body: '{}'});
-  toast('已请求终止'); setTimeout(renderProjects, 500);
+async function stopProject(id){
+  await api('/api/projects/'+id+'/stop',{method:'POST',body:'{}'});
+  toast('已请求终止'); setTimeout(()=>{ CURRENT_PROJECT?renderProjectDetail(CURRENT_PROJECT):renderProjects(); },600);
 }
-async function openProject(id) { CURRENT_PROJECT = id; renderProjectDetail(id); }
-
-async function renderProjectDetail(pid) {
-  const d = await api('/api/projects/'+pid);
-  if (d.ok === false) { CURRENT_PROJECT = null; return renderProjects(); }
-  const m = $('#main'); m.innerHTML = '';
-  m.append(el('span', {cls:'back', onclick:()=>{CURRENT_PROJECT=null;renderProjects();}}, '← 返回工程列表'));
-  m.append(el('h1', {}, '📦 ' + d.project.name));
-  m.append(el('div', {cls:'sub'}, '工程 ID: ' + pid + ' · 用例 ' + d.cases.length + ' · 创建 ' + (d.project.created||'')));
-
-  const anyRunning = d.cases.some(c => c.status === 'running' || c.status === 'pending');
-  const bar = el('div', {cls:'toolbar'});
-  const startBtn = el('button', {cls:'primary', onclick:()=>runProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '▶ 启动全部用例');
-  startBtn.disabled = anyRunning;
-  bar.append(startBtn);
-  const stopBtn = el('button', {cls:'danger', onclick:()=>stopProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),600))}, '■ 终止');
-  stopBtn.disabled = !anyRunning;
-  bar.append(stopBtn);
-  bar.append(el('span', {cls:'spacer'}));
-  bar.append(el('span', {cls:'muted'}, el('a', {href:'#', onclick:(e)=>{e.preventDefault();renderProjectDetail(pid)}}, '刷新')));
+async function openProject(id){ CURRENT_PROJECT=id; renderProjectDetail(id); }
+async function packProject(id){
+  toast('正在打包，请稍候…');
+  const r=await fetch('/api/projects/'+id+'/pack');
+  if(!r.ok){ toast('打包失败'); return; }
+  const blob=await r.blob();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const cd=r.headers.get('Content-Disposition')||'';
+  const mt=cd.match(/filename="?([^"]+)"?/); a.download=mt?mt[1]:('project_'+id+'.zip');
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+  toast('已下载打包文件');
+}
+async function renderProjectDetail(pid){
+  const d=await api('/api/projects/'+pid);
+  if(d.ok===false){ CURRENT_PROJECT=null; return renderProjects(); }
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('span',{cls:'back',onclick:()=>{CURRENT_PROJECT=null;renderProjects();}}, iconEl('arrowLeft'), el('span',{},'返回工程列表')));
+  m.append(el('div',{cls:'page-head'}, el('h1',{}, d.project.name),
+    el('div',{cls:'sub'},'工程 ID: '+esc(pid)+' · 用例 '+d.cases.length+' · 创建 '+esc(d.project.created||''))));
+  const anyRunning=d.cases.some(c=>c.status==='running'||c.status==='pending');
+  const bar=el('div',{cls:'toolbar'});
+  const startBtn=btn('启动全部用例','play','primary',()=>runProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),700)));
+  startBtn.disabled=anyRunning; bar.append(startBtn);
+  const stopBtn=btn('终止','stop','danger',()=>stopProject(pid).then(()=>setTimeout(()=>renderProjectDetail(pid),700)));
+  stopBtn.disabled=!anyRunning; bar.append(stopBtn);
+  const packBtn=btn('打包全部日志','download','',()=>packProject(pid)); packBtn.disabled=anyRunning; bar.append(packBtn);
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','small',()=>renderProjectDetail(pid)));
   m.append(bar);
-
-  const card = el('div', {cls:'card'});
-  const tb = el('table');
-  tb.innerHTML = '<thead><tr><th>状态</th><th>用例 ID</th><th>数据集</th><th>输入/输出</th>'
-    + '<th>命中</th><th>SLA</th><th>开始</th><th>结束</th><th>操作</th></tr></thead>';
-  const tbody = el('tbody');
-  d.cases.forEach(c => {
-    const tr = el('tr');
-    tr.innerHTML =
-      '<td>' + pill(c.status) + '</td>'
-      + '<td><code>' + c.case_id + '</code></td>'
-      + '<td>' + c.dataset + '</td>'
-      + '<td>' + kfmt(c.input_len) + ' / ' + kfmt(c.output_len) + '</td>'
-      + '<td>' + hitfmt(c.hit_rate) + '</td>'
-      + '<td>TTFT≤' + c.ttft_sla_ms + 'ms TPOT≤' + c.tpot_sla_ms + 'ms</td>'
-      + '<td class="muted">' + (c.started||'-') + '</td>'
-      + '<td class="muted">' + (c.finished||'-') + '</td>'
-      + '<td></td>';
-    const op = tr.lastElementChild;
-    op.append(el('button', {cls:'small', onclick:()=>openCase(pid,c.case_id)}, '查看结果'));
-    const runBtn = el('button', {cls:'small', onclick:()=>runOne(pid,c.case_id)}, '运行');
-    runBtn.disabled = (c.status === 'running' || c.status === 'pending');
-    op.append(runBtn);
-    if (c.error) op.append(el('span', {cls:'muted', style:'margin-left:6px'}, '⚠ ' + c.error));
+  PROJECT_BEST={};
+  await Promise.all(d.cases.filter(c=>c.status==='done').map(async c=>{
+    try{ const r=await api('/api/projects/'+pid+'/case/'+c.case_id); PROJECT_BEST[c.case_id]=bestOf(r); }catch(e){}
+  }));
+  const card=el('div',{cls:'card'});
+  card.append(el('h2',{}, iconEl('flask'), el('span',{},'工程用例'), el('span',{cls:'hint'}, '已完成用例仅显示最优结果')));
+  const wrap=el('div',{style:'overflow:auto'});
+  const tb=el('table');
+  tb.innerHTML='<thead><tr><th>状态</th><th>用例 ID</th><th>数据集</th><th>输入/输出</th>'
+    +'<th>命中</th><th>SLA</th><th>最优并发</th><th>最优 TTFT/TPOT</th><th>峰值输出吞吐</th>'
+    +'<th>开始</th><th>操作</th></tr></thead>';
+  const tbody=el('tbody');
+  d.cases.forEach(c=>{
+    const tr=el('tr');
+    const best=(c.status==='done')?PROJECT_BEST[c.case_id]:null;
+    const bestConc = best?best.maxConc:'';
+    const bestTtft = best&&best.best?fmt(best.best.ttft,0):'';
+    const bestTpot = best&&best.best?fmt(best.best.tpot,2):'';
+    const bestTps  = best&&best.peakTps!=null?best.peakTps.toFixed(1):'';
+    tr.innerHTML=
+      '<td>'+pill(c.status)+'</td>'
+      +'<td><code>'+esc(c.case_id)+'</code></td>'
+      +'<td>'+esc(c.dataset)+'</td>'
+      +'<td class="mono">'+kfmt(c.input_len)+' / '+kfmt(c.output_len)+'</td>'
+      +'<td>'+hitfmt(c.hit_rate)+'</td>'
+      +'<td class="mono">TTFT≤'+c.ttft_sla_ms+' TPOT≤'+c.tpot_sla_ms+'ms</td>'
+      +'<td>'+(bestConc!==''?('<b style="color:var(--accent);font-family:Fira Code">'+bestConc+'</b>'):'<span class="muted">—</span>')+'</td>'
+      +'<td class="mono">'+(bestTtft!==''?(bestTtft+' / '+bestTpot+' ms'):'<span class="muted">—</span>')+'</td>'
+      +'<td class="mono">'+(bestTps!==''?bestTps:'<span class="muted">—</span>')+'</td>'
+      +'<td class="muted">'+(c.started||'-')+(c.status==='running'?' <span class="elapsed">'+elapsed(c.started,c.finished)+'</span>':'')+'</td>'
+      +'<td></td>';
+    const op=tr.lastElementChild;
+    op.append(el('button',{cls:'small',onclick:()=>openCase(pid,c.case_id)},'查看详情'));
+    const runBtn=el('button',{cls:'small',onclick:()=>runOne(pid,c.case_id)},'运行');
+    runBtn.disabled=(c.status==='running'||c.status==='pending'); op.append(runBtn);
+    if(c.error) op.append(el('span',{cls:'muted',style:'margin-left:6px'},'⚠ '+esc(c.error)));
     tbody.append(tr);
   });
-  tb.append(tbody);
-  card.append(tb);
+  tb.append(tbody); wrap.append(tb); card.append(wrap);
   m.append(card);
 }
-
-async function runOne(pid, cid) {
-  const r = await api('/api/projects/'+pid+'/run', {method:'POST', body: JSON.stringify({case_ids:[cid]})});
-  toast(r.ok ? ('已启动: ' + cid) : ('失败: ' + (r.error||'')));
-  setTimeout(()=>renderProjectDetail(pid), 600);
+function fmt(v,d){ return v==null?'-':(+v).toFixed(d); }
+function bestOf(d){
+  const rows=(d.rows||[]).filter(r=>!r.error);
+  const ttftSLA=d.ttft_sla_ms||null, tpotSLA=d.tpot_sla_ms||null;
+  const pass=r=>(r.ttft==null||r.ttft<=ttftSLA)&&(r.tpot==null||r.tpot<=tpotSLA)&&(r.ok||0)==(r.total||0);
+  const passing=rows.filter(pass);
+  const maxConc=passing.length?Math.max(...passing.map(r=>r.parallel)):0;
+  const best=passing.find(r=>r.parallel===maxConc)||null;
+  const peakTps=passing.length?Math.max(...passing.map(r=>r.out_tps||0)):null;
+  return {rows,maxConc,best,peakTps,ttftSLA,tpotSLA};
 }
-
-async function openCase(pid, cid) {
-  const d = await api('/api/projects/'+pid+'/case/'+cid);
-  $('#dlg-title').textContent = '用例 ' + cid;
-  const body = $('#dlg-body'); body.innerHTML = '';
-
-  const kv = el('div', {cls:'kv'});
-  kv.append(el('div', {cls:'k'}, '状态'), el('div', {cls:'v', html: pill(d.task.status||'not_started')}));
-  kv.append(el('div', {cls:'k'}, '结果目录'), el('div', {cls:'v', html:'<code>' + (d.result_dir||'-') + '</code>'}));
-  kv.append(el('div', {cls:'k'}, '汇总文件'),
-    el('div', {cls:'v', html: d.summary_path ? ('<code>' + d.summary_path + '</code>') : '<span class="muted">尚未生成</span>'}));
-  const logDiv = el('div', {cls:'v'});
-  if (d.log_path) {
-    logDiv.innerHTML = '<code>' + d.log_path + '</code> ';
-    const b = el('button', {cls:'small'}, '查看'); b.onclick = () => showLog(d.log_path); logDiv.append(b);
-  } else logDiv.innerHTML = '<span class="muted">-</span>';
-  kv.append(el('div', {cls:'k'}, '运行日志'), logDiv);
+async function runOne(pid,cid){
+  const r=await api('/api/projects/'+pid+'/run',{method:'POST',body:JSON.stringify({case_ids:[cid]})});
+  toast(r.ok?('已启动: '+cid):('失败: '+(r.error||''))); setTimeout(()=>renderProjectDetail(pid),700);
+}
+async function openCase(pid,cid){
+  const d=await api('/api/projects/'+pid+'/case/'+cid);
+  $('#dlg-title').textContent='用例 '+cid;
+  const body=$('#dlg-body'); body.innerHTML='';
+  const rows=(d.rows||[]).filter(r=>!r.error);
+  const b=bestOf(d);
+  const ttftSLA=b.ttftSLA, tpotSLA=b.tpotSLA;
+  if(rows.length){
+    const sb=el('div',{cls:'summary-bar'});
+    sb.append(el('div',{cls:'summary-stat '+(b.maxConc?'pass':'fail')}, el('div',{cls:'val'},String(b.maxConc||'—')), el('div',{cls:'lbl'},'最大达标并发')));
+    sb.append(el('div',{cls:'summary-stat'}, el('div',{cls:'val'},String(rows.length)), el('div',{cls:'lbl'},'探测并发档数')));
+    const allOk=rows.reduce((s,r)=>s+(r.ok||0),0), allTotal=rows.reduce((s,r)=>s+(r.total||0),0);
+    sb.append(el('div',{cls:'summary-stat '+(allOk===allTotal?'pass':'fail')}, el('div',{cls:'val'},allOk+'/'+allTotal), el('div',{cls:'lbl'},'总成功/总请求')));
+    if(b.peakTps!=null) sb.append(el('div',{cls:'summary-stat'}, el('div',{cls:'val'},b.peakTps.toFixed(1)), el('div',{cls:'lbl'},'峰值输出 tok/s')));
+    body.append(sb);
+  }
+  const kv=el('div',{cls:'kv'});
+  kv.append(el('div',{cls:'k'},'状态'), el('div',{cls:'v',html:pill(d.task.status||'not_started')}));
+  kv.append(el('div',{cls:'k'},'结果目录'), el('div',{cls:'v',html:'<code>'+esc(d.result_dir||'-')+'</code>'}));
+  kv.append(el('div',{cls:'k'},'汇总文件'),
+    el('div',{cls:'v',html:d.summary_path?('<code>'+esc(d.summary_path)+'</code>'):'<span class="muted">尚未生成</span>'}));
+  const logDiv=el('div',{cls:'v'});
+  if(d.log_path){ logDiv.innerHTML='<code>'+esc(d.log_path)+'</code> '; const bb=el('button',{cls:'small'},'查看'); bb.onclick=()=>showLog(d.log_path); logDiv.append(bb); }
+  else logDiv.innerHTML='<span class="muted">-</span>';
+  kv.append(el('div',{cls:'k'},'运行日志'), logDiv);
   body.append(kv);
-
-  body.append(el('h3', {style:'font-size:13px'}, '性能结果（各并发达标情况）'));
-  if (!d.rows || !d.rows.length) {
-    body.append(el('div', {cls:'muted'}, '暂无结果数据（用例未完成或未产生结果）'));
-  } else {
-    const tb = el('table');
-    tb.innerHTML = '<thead><tr><th>并发</th><th>TTFT(ms)</th><th>TPOT(ms)</th><th>延迟(s)</th>'
-      + '<th>成功/总</th><th>输出tok/s</th><th>总tok/s</th></tr></thead>';
-    const tb2 = el('tbody');
-    d.rows.forEach(r => {
-      if (r.error) { tb2.append(el('tr', {html:'<td colspan=7 class="muted">' + r.error + '</td>'})); return; }
-      tb2.append(el('tr', {html:'<td>' + r.parallel + '</td>'
-        + '<td>' + (r.ttft==null?'-':(+r.ttft).toFixed(0)) + '</td>'
-        + '<td>' + (r.tpot==null?'-':(+r.tpot).toFixed(2)) + '</td>'
-        + '<td>' + (r.latency==null?'-':(+r.latency).toFixed(1)) + '</td>'
-        + '<td>' + (r.ok||0) + '/' + (r.total||0) + '</td>'
-        + '<td>' + (r.out_tps==null?'-':(+r.out_tps).toFixed(1)) + '</td>'
-        + '<td>' + (r.total_tps==null?'-':(+r.total_tps).toFixed(1)) + '</td>'}));
+  body.append(el('h3',{style:'font-size:13px;margin:16px 0 8px;color:#fff'},'性能结果（各并发达标情况）'));
+  if(!rows.length){
+    body.append(el('div',{cls:'muted'},'暂无结果数据（用例未完成或未产生结果）'));
+  }else{
+    const chartData=rows.map(r=>({label:String(r.parallel),val:r.ttft,fail:(r.ttft!=null&&ttftSLA&&r.ttft>ttftSLA)}));
+    const cr=el('div',{cls:'chart-row'});
+    const cb1=el('div',{cls:'chart-box'});
+    cb1.append(el('h4',{},'TTFT (ms) vs 并发'+(ttftSLA?'  ·  SLA ≤ '+ttftSLA+'ms':'')));
+    cb1.innerHTML+=barChart(chartData,{threshold:ttftSLA,color:'#38BDF8',labelFmt:v=>v.toFixed(0)});
+    cr.append(cb1);
+    const cb2=el('div',{cls:'chart-box'});
+    cb2.append(el('h4',{},'TPOT (ms) vs 并发'+(tpotSLA?'  ·  SLA ≤ '+tpotSLA+'ms':'')));
+    cb2.innerHTML+=barChart(rows.map(r=>({label:String(r.parallel),val:r.tpot,fail:(r.tpot!=null&&tpotSLA&&r.tpot>tpotSLA)})),{threshold:tpotSLA,color:'#A78BFA',labelFmt:v=>v.toFixed(2)});
+    cr.append(cb2);
+    const cb3=el('div',{cls:'chart-box'});
+    cb3.append(el('h4',{},'输出吞吐 (tok/s) vs 并发'));
+    cb3.innerHTML+=barChart(rows.map(r=>({label:String(r.parallel),val:r.out_tps})),{color:'#22C55E',labelFmt:v=>v.toFixed(0)});
+    cr.append(cb3);
+    body.append(cr);
+    const tb=el('table');
+    tb.innerHTML='<thead><tr><th>并发</th><th>TTFT(ms)</th><th>TPOT(ms)</th><th>延迟(s)</th>'
+      +'<th>成功/总</th><th>输出tok/s</th><th>总tok/s</th><th>判定</th></tr></thead>';
+    const tb2=el('tbody');
+    rows.forEach(r=>{
+      const pass=(r.ttft==null||r.ttft<=ttftSLA)&&(r.tpot==null||r.tpot<=tpotSLA)&&(r.ok||0)==(r.total||0);
+      const tr=el('tr',{cls:pass?'sla-pass':'sla-fail'});
+      tr.innerHTML='<td class="mono">'+r.parallel+'</td>'
+        +'<td class="mono">'+(r.ttft==null?'-':(+r.ttft).toFixed(0))+'</td>'
+        +'<td class="mono">'+(r.tpot==null?'-':(+r.tpot).toFixed(2))+'</td>'
+        +'<td class="mono">'+(r.latency==null?'-':(+r.latency).toFixed(1))+'</td>'
+        +'<td class="mono">'+(r.ok||0)+'/'+(r.total||0)+'</td>'
+        +'<td class="mono">'+(r.out_tps==null?'-':(+r.out_tps).toFixed(1))+'</td>'
+        +'<td class="mono">'+(r.total_tps==null?'-':(+r.total_tps).toFixed(1))+'</td>'
+        +'<td>'+(pass?'<span class="pill done">PASS</span>':'<span class="pill error">FAIL</span>')+'</td>';
+      tb2.append(tr);
     });
     tb.append(tb2); body.append(tb);
+    body.append(el('button',{cls:'small',style:'margin-top:12px',onclick:()=>{
+      exportCSV(rows.map(r=>({parallel:r.parallel,ttft_ms:r.ttft,tpot_ms:r.tpot,latency_s:r.latency,
+        success:r.ok,total:r.total,output_tps:r.out_tps,total_tps:r.total_tps})),cid+'_results.csv');
+    }},'导出 CSV'));
   }
-  if (d.per_concurrency_logs && d.per_concurrency_logs.length) {
-    body.append(el('h3', {style:'font-size:13px;margin-top:16px'}, '分并发日志'));
-    d.per_concurrency_logs.forEach(p => {
-      const row = el('div');
-      row.innerHTML = '<code>' + p + '</code> ';
-      const b = el('button', {cls:'small'}, '查看'); b.onclick = () => showLog(p); row.append(b);
+  if(d.per_concurrency_logs&&d.per_concurrency_logs.length){
+    body.append(el('h3',{style:'font-size:13px;margin-top:16px;color:#fff'},'分并发日志'));
+    d.per_concurrency_logs.forEach(p=>{
+      const row=el('div',{style:'margin:4px 0;display:flex;align-items:center;gap:8px'});
+      row.innerHTML='<code>'+esc(p)+'</code> ';
+      const bb=el('button',{cls:'small'},'查看'); bb.onclick=()=>showLog(p); row.append(bb);
       body.append(row);
     });
   }
   $('#dlg').showModal();
 }
+async function showLog(path){
+  const r=await api('/api/log?path='+encodeURIComponent(path));
+  $('#dlg-title').textContent='日志: '+path.split('/').slice(-2).join('/');
+  $('#dlg-body').innerHTML='';
+  $('#dlg-body').append(el('pre',{cls:'log'},(r.lines||['(空)']).join('')));
+  if(!$('#dlg').open) $('#dlg').showModal();
+}
 
-async function showLog(path) {
-  const r = await api('/api/log?path=' + encodeURIComponent(path));
-  $('#dlg-title').textContent = '日志: ' + path.split('/').slice(-2).join('/');
-  $('#dlg-body').innerHTML = '';
-  $('#dlg-body').append(el('pre', {cls:'log'}, (r.lines||['(空)']).join('')));
-  if (!$('#dlg').open) $('#dlg').showModal();
+/* ============================ 功能/精度 共用状态卡 ============================ */
+function statusCard(baseId, st, running, labelMap){
+  const card=$('#'+baseId); if(!card) return;
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行状态'), el('span',{cls:'hint'}, running?'进行中':'空闲')));
+  const kv=el('div',{cls:'kv'});
+  kv.append(el('div',{cls:'k'},'状态'), el('div',{cls:'v',html:pill(st.status||'not_started')}));
+  kv.append(el('div',{cls:'k'},'开始'), el('div',{cls:'v'},(st.started||'-')+(running?' <span class="elapsed">'+elapsed(st.started)+'</span>':'')));
+  kv.append(el('div',{cls:'k'},'结束'), el('div',{cls:'v'},st.finished||'-'));
+  if(st.error) kv.append(el('div',{cls:'k'},'错误'), el('div',{cls:'v',style:'color:var(--destructive)'},esc(st.error)));
+  const ld=el('div',{cls:'v'});
+  if(st.log_path){ ld.innerHTML='<code>'+esc(st.log_path)+'</code> '; const b=el('button',{cls:'small'},'查看日志'); b.onclick=()=>showLog(st.log_path); ld.append(b); }
+  else ld.innerHTML='<span class="muted">-</span>';
+  kv.append(el('div',{cls:'k'},'运行日志'), ld);
+  c.append(kv);
+  card.append(c);
+}
+function reportCard(baseId, r, emptyIcon, emptyText){
+  const card=$('#'+baseId); if(!card) return;
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('doc'), el('span',{},'测试报告')));
+  if(!r.ok||!r.report){
+    c.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon(emptyIcon)}), el('div',{},emptyText)));
+  }else{
+    c.append(el('div',{html:renderMD(r.report)}));
+    c.append(el('div',{cls:'hint',style:'margin-top:12px;color:var(--fg-mute)'}, r.path));
+  }
+  card.append(c);
+}
+
+/* ============================ 功能测试 ============================ */
+async function renderFunctional(){
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'功能测试'),
+    el('div',{cls:'sub'},'对被测服务做 API 端到端功能检查（OpenAI 兼容性/流式/结构化输出/多轮/工具调用等），判定 PASS / WARN / FAIL / SKIP')));
+  const bar=el('div',{cls:'toolbar'});
+  bar.append(btn('运行功能测试','play','primary',runFunctional));
+  bar.append(btn('查看用例清单','list','',viewFuncList));
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','small',renderFunctional));
+  m.append(bar);
+  m.append(el('div',{id:'func-status-card'}));
+  m.append(el('div',{id:'func-report-card'}));
+  await refreshFuncStatus();
+}
+async function refreshFuncStatus(){
+  const st=await api('/api/functional/status');
+  if(!$('#func-status-card')) return;
+  const running=st.status==='running';
+  statusCard('func-status-card', st, running);
+  if(running){ setTimeout(async()=>{ await refreshFuncStatus(); await loadFuncReport(); },4000); }
+  else { await loadFuncReport(); }
+}
+async function loadFuncReport(){
+  const r=await api('/api/functional/report');
+  reportCard('func-report-card', r, 'compass', '暂无报告，点上方「运行功能测试」开始');
+}
+async function runFunctional(){
+  const r=await api('/api/functional/run',{method:'POST',body:'{}'});
+  if(r.ok) toast('功能测试已启动'); else toast('启动失败: '+(r.error||''));
+  await refreshFuncStatus();
+}
+async function viewFuncList(){
+  const r=await api('/api/functional/list');
+  $('#dlg-title').textContent='功能测试用例清单';
+  $('#dlg-body').innerHTML='';
+  $('#dlg-body').append(el('pre',{cls:'log'},(r.lines||['(空)']).join('\n')));
+  $('#dlg').showModal();
+}
+
+/* ============================ 精度测试 ============================ */
+async function renderAccuracy(){
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'精度测试'),
+    el('div',{cls:'sub'},'用 evalscope 跑精度数据集（gpqa/aime/gsm8k/mmlu 等），输出 pass@k 汇总')));
+  const bar=el('div',{cls:'toolbar'});
+  bar.append(btn('运行精度测试','play','primary',runAccuracy));
+  bar.append(btn('查看数据集组','list','',viewAccList));
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','small',renderAccuracy));
+  m.append(bar);
+  m.append(el('div',{id:'acc-status-card'}));
+  m.append(el('div',{id:'acc-report-card'}));
+  await refreshAccStatus();
+}
+async function refreshAccStatus(){
+  const st=await api('/api/accuracy/status');
+  if(!$('#acc-status-card')) return;
+  const running=st.status==='running';
+  statusCard('acc-status-card', st, running);
+  if(running){ setTimeout(async()=>{ await refreshAccStatus(); await loadAccReport(); },6000); }
+  else { await loadAccReport(); }
+}
+async function loadAccReport(){
+  const r=await api('/api/accuracy/report');
+  reportCard('acc-report-card', r, 'target', '暂无精度结果，点上方「运行精度测试」开始');
+}
+async function runAccuracy(){
+  const r=await api('/api/accuracy/run',{method:'POST',body:'{}'});
+  if(r.ok) toast('精度测试已启动'); else toast('启动失败: '+(r.error||''));
+  await refreshAccStatus();
+}
+async function viewAccList(){
+  const r=await api('/api/accuracy/list');
+  $('#dlg-title').textContent='精度数据集组';
+  $('#dlg-body').innerHTML='';
+  $('#dlg-body').append(el('pre',{cls:'log'},(r.lines||['(空)']).join('\n')));
+  $('#dlg').showModal();
 }
 
 /* ============================ 导航 ============================ */
-const RENDER = { config: renderConfig, cases: renderCases, projects: renderProjects };
-async function go(view) {
-  VIEW = view;
-  if (view !== 'projects') CURRENT_PROJECT = null;
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
+const RENDER={ config:renderConfig, cases:renderCases, projects:renderProjects,
+               functional:renderFunctional, accuracy:renderAccuracy };
+async function go(view){
+  VIEW=view;
+  if(view!=='projects') CURRENT_PROJECT=null;
+  $$('#nav a').forEach(a=>a.classList.toggle('active', a.dataset.view===view));
   await RENDER[view]();
 }
-document.querySelectorAll('#nav a').forEach(a => a.onclick = () => go(a.dataset.view));
-
-/* 自动刷新：测试工程详情页 5 秒刷新；测试用例页有生成中任务时 3 秒刷新 */
-setInterval(() => { if (VIEW === 'projects' && CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); }, 5000);
-setInterval(() => {
-  if (VIEW === 'cases') {
-    const gen = document.querySelector('[data-gen][disabled]');
-    if (gen) renderCases();
-  }
-}, 3000);
-
+$$('#nav a').forEach(a=>a.onclick=()=>go(a.dataset.view));
+setInterval(()=>{ if(VIEW==='projects'&&CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); },5000);
+setInterval(()=>{ if(VIEW==='cases'){ const g=document.querySelector('[data-gen][disabled]'); if(g) renderCases(); } },3000);
 go('config');
 </script>
 </body>

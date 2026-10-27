@@ -34,7 +34,7 @@ import runner  # noqa: E402
 
 try:
     from fastapi import FastAPI, Body
-    from fastapi.responses import JSONResponse, HTMLResponse
+    from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
     import uvicorn
 except ImportError:
     print("缺少 fastapi/uvicorn，请先 pip install fastapi uvicorn", file=sys.stderr)
@@ -522,10 +522,14 @@ def api_project_case_detail(pid: str, cid: str):
     res = _result_of(cid)
     t = _TASKS.get(_task_key(pid, cid), {})
     per_logs = sorted(glob.glob(os.path.join(res["result_dir"], "*", "*", "sla_tuning", "*", "benchmark.log")))
+    # 附带用例 SLA 阈值供前端判定达标
+    st = load_state()
+    c = next((x for x in get_cases(st) if x.get("id") == cid), {})
     return {"case_id": cid, "task": t, "summary_path": res["summary_path"],
             "rows": res["rows"], "result_dir": res["result_dir"],
             "log_path": t.get("log_path") or _latest_case_log(pid, cid),
-            "per_concurrency_logs": per_logs}
+            "per_concurrency_logs": per_logs,
+            "ttft_sla_ms": c.get("ttft_sla_ms"), "tpot_sla_ms": c.get("tpot_sla_ms")}
 
 
 @app.post("/api/projects/{pid}/run")
@@ -567,6 +571,163 @@ def api_log(path: str):
     with open(ap, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     return {"ok": True, "lines": lines[-400:]}
+
+
+# ----------------------------------------------------- 功能/精度测试 -------
+_FUNC_TASK = {}   # {status, started, finished, log_path, error, report_path}
+_ACC_TASK = {}
+
+def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
+    """通用后台执行：功能/精度测试共用。"""
+    log_path = os.path.join(LOGS_DIR, f"{log_prefix}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    task_dict.update(status="running", started=_now(), finished=None, error=None, log_path=log_path)
+    with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
+        try:
+            logf.write(f"[{log_prefix}] 命令: {' '.join(cmd)}\n")
+            r = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=KIT_ROOT)
+            if r.returncode == 0:
+                task_dict.update(status="done", finished=_now())
+            else:
+                task_dict.update(status="error", finished=_now(), error=f"exit code {r.returncode}")
+        except Exception as e:
+            task_dict.update(status="error", finished=_now(), error=str(e))
+
+def _build_service_cmd(script, extra_args=None):
+    """构建功能/精度测试命令，从 effective_config 取 url/model/api_key。"""
+    cfg, _ = effective_config()
+    svc = cfg.get("service", {})
+    req = cfg.get("request", {})
+    cmd = ["python3", script, "--config", CONFIG_PATH]
+    if svc.get("url"):
+        cmd += ["--base-url", svc["url"].replace("/v1/chat/completions", "")]
+    if svc.get("model"):
+        cmd += ["--model", svc["model"]]
+    api_key = req.get("api_key", "")
+    if api_key:
+        cmd += ["--api-key", api_key]
+    # Host header
+    if req.get("add_host_header"):
+        host = req.get("host_header") or ""
+        if not host:
+            from urllib.parse import urlsplit
+            host = urlsplit(svc.get("url") or "").hostname or ""
+        if host:
+            cmd += ["--header", f"Host={host}"]
+    if extra_args:
+        cmd += extra_args
+    return cmd
+
+
+@app.get("/api/functional/status")
+def api_func_status():
+    return dict(_FUNC_TASK) if _FUNC_TASK else {"status": "not_started"}
+
+@app.post("/api/functional/run")
+def api_func_run(payload: dict = Body(default={})):
+    if _FUNC_TASK.get("status") == "running":
+        return JSONResponse({"ok": False, "error": "功能测试正在运行中"}, status_code=409)
+    cfg, _ = effective_config()
+    extra = []
+    fcfg = cfg.get("functional", {})
+    if fcfg.get("skip_long_context_api"):
+        extra.append("--skip-long-context-api")
+    cmd = _build_service_cmd(os.path.join("scripts", "run_api_e2e.py"), extra)
+    threading.Thread(target=_run_generic, args=("func", _FUNC_TASK, cmd, "func"), daemon=True).start()
+    return {"ok": True}
+
+@app.get("/api/functional/report")
+def api_func_report():
+    """读最新功能测试 markdown 报告。"""
+    base = os.path.join(RESULTS_DIR, "functional")
+    reports = sorted(glob.glob(os.path.join(base, "**", "report.md"), recursive=True))
+    if not reports:
+        return {"ok": False, "report": None}
+    path = reports[-1]
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    return {"ok": True, "report": text, "path": path}
+
+@app.get("/api/functional/list")
+def api_func_list():
+    """列出功能测试用例（--list）。"""
+    cmd = ["python3", os.path.join(KIT_ROOT, "scripts", "run_api_e2e.py"), "--config", CONFIG_PATH, "--list"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd=KIT_ROOT)
+        return {"ok": True, "lines": (r.stdout or "").splitlines()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/accuracy/status")
+def api_acc_status():
+    return dict(_ACC_TASK) if _ACC_TASK else {"status": "not_started"}
+
+@app.post("/api/accuracy/run")
+def api_acc_run(payload: dict = Body(default={})):
+    if _ACC_TASK.get("status") == "running":
+        return JSONResponse({"ok": False, "error": "精度测试正在运行中"}, status_code=409)
+    cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"), "--config", CONFIG_PATH]
+    k = payload.get("k")
+    if k:
+        cmd += ["--k", str(int(k))]
+    only = payload.get("only")
+    if only:
+        cmd += ["--only", only]
+    threading.Thread(target=_run_generic, args=("acc", _ACC_TASK, cmd, "acc"), daemon=True).start()
+    return {"ok": True}
+
+@app.get("/api/accuracy/report")
+def api_acc_report():
+    """读 results/accuracy/scores.md。"""
+    path = os.path.join(RESULTS_DIR, "accuracy", "scores.md")
+    if not os.path.exists(path):
+        return {"ok": False, "report": None}
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    return {"ok": True, "report": text, "path": path}
+
+@app.get("/api/accuracy/list")
+def api_acc_list():
+    cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"), "--config", CONFIG_PATH, "--list"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd=KIT_ROOT)
+        return {"ok": True, "lines": (r.stdout or "").splitlines()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ----------------------------------------------------- 日志打包下载 -------
+@app.get("/api/projects/{pid}/pack")
+def api_project_pack(pid: str):
+    """打包工程所有日志+结果为 zip 流式下载。"""
+    import zipfile, io as _io
+    st = load_state()
+    p = next((x for x in (st.get("projects") or []) if x["id"] == pid), None)
+    if not p:
+        return JSONResponse({"ok": False, "error": "工程不存在"}, status_code=404)
+
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1) 工程用例日志
+        for cid in p.get("case_ids", []):
+            for log in sorted(glob.glob(os.path.join(LOGS_DIR, f"proj_{pid}_{cid}_*.log"))):
+                zf.write(log, os.path.relpath(log, KIT_ROOT))
+        # 2) 结果目录
+        for cid in p.get("case_ids", []):
+            res_dir = os.path.join(RESULTS_DIR, cid)
+            if os.path.isdir(res_dir):
+                for root, _, files in os.walk(res_dir):
+                    for f in files:
+                        full = os.path.join(root, f)
+                        zf.write(full, os.path.relpath(full, KIT_ROOT))
+        # 3) web_state 中的 task 信息
+        tasks = {k: v for k, v in (st.get("tasks") or {}).items() if k.startswith(pid + "/")}
+        if tasks:
+            zf.writestr("web_tasks.json", json.dumps(tasks, ensure_ascii=False, indent=2))
+    buf.seek(0)
+    fname = f"{p.get('name','project')}_logs.zip"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 def main():

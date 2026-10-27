@@ -19,6 +19,44 @@ echo "== [2/4] 安装 evalscope[perf] + Web 依赖 =="
 # Web 前端后端（fastapi + uvicorn）
 "$PY" -m pip install fastapi uvicorn -i "$PIP_INDEX" -q 2>/dev/null || true
 
+echo "== [2.5/4] 补丁: custom 数据集插件支持 dataset_offset =="
+# 官方 custom 插件忽略 --dataset-offset（random/multi_turn 插件都支持），多轮摸高换起点时
+# 无法跳过前 N 行 -> 打补丁让 build_messages 按 offset 跳行。幂等：已打过则跳过。
+"$PY" - <<'PYEOF'
+import os, re, sys
+try:
+    import evalscope
+except ImportError:
+    sys.exit(0)  # evalscope 未装成功，前面步骤已报错
+f = os.path.join(os.path.dirname(evalscope.__file__),
+                 "perf", "plugin", "datasets", "custom.py")
+if not os.path.exists(f):
+    print(f"  [patch] 未找到 {f}，跳过")
+    sys.exit(0)
+src = open(f, encoding="utf-8").read()
+if "dataset_offset" in src:
+    print("  [patch] custom.py 已支持 dataset_offset，跳过")
+    sys.exit(0)
+old = '''    def build_messages(self) -> Iterator[List[Dict]]:
+        for item in self.dataset_line_by_line(self.query_parameters.dataset_path):
+            prompt = item.strip()'''
+new = '''    def build_messages(self) -> Iterator[List[Dict]]:
+        offset = self.query_parameters.dataset_offset
+
+        for index, item in enumerate(
+            self.dataset_line_by_line(self.query_parameters.dataset_path)
+        ):
+            if index < offset:
+                continue
+
+            prompt = item.strip()'''
+if old not in src:
+    print("  [patch] 警告: custom.py 原文不匹配（evalscope 版本变了？），未打补丁")
+    sys.exit(0)
+open(f, "w", encoding="utf-8").write(src.replace(old, new, 1))
+print(f"  [patch] 已为 {f} 打 dataset_offset 补丁")
+PYEOF
+
 echo "== [3/4] 修复已知依赖坑 =="
 # 坑1: openai 版本不匹配 -> cannot import name 'APIStatusError'
 "$PY" -c "import openai" 2>/dev/null \
