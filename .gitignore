@@ -8,6 +8,8 @@ build/
 # Results & logs (generated at runtime)
 results/
 logs/
+# 本地软链到 ../logs（symlink 不被 'logs/' 匹配）
+logs
 datasets/
 
 # Test artifacts
