@@ -129,11 +129,11 @@
   .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
   .toolbar .spacer{flex:1}
 
-  pre.log{background:rgba(9,14,26,.92);color:#cbd5e1;padding:16px;border-radius:12px;max-height:440px;
+  pre.log{background:rgba(9,14,26,.92);color:#cbd5e1;padding:16px;border-radius:12px;max-height:70vh;
           overflow:auto;font-size:12px;line-height:1.6;white-space:pre-wrap;border:1px solid var(--glass-line);
           font-family:"Fira Code",Menlo,Consolas,monospace}
 
-  dialog{border:1px solid var(--glass-line);border-radius:18px;padding:0;width:min(1000px,94vw);max-height:92vh;
+  dialog{border:1px solid var(--glass-line);border-radius:18px;padding:0;width:min(1100px,96vw);max-height:94vh;
          background:linear-gradient(180deg,#1B2336,#141c2d);color:var(--fg);
          box-shadow:0 40px 90px -24px rgba(0,0,0,.75)}
   dialog::backdrop{background:rgba(9,14,26,.7);backdrop-filter:blur(4px)}
@@ -838,12 +838,41 @@ async function openCase(pid,cid){
   }
   $('#dlg').showModal();
 }
+let _LOG_POLL = null;
 async function showLog(path){
-  const r=await api('/api/log?path='+encodeURIComponent(path));
+  if (_LOG_POLL) { clearInterval(_LOG_POLL); _LOG_POLL = null; }
   $('#dlg-title').textContent='日志: '+path.split('/').slice(-2).join('/');
-  $('#dlg-body').innerHTML='';
-  $('#dlg-body').append(el('pre',{cls:'log'},(r.lines||['(空)']).join('')));
+  const body=$('#dlg-body'); body.innerHTML='';
+  /* 工具栏：行数 + 停止轮询 */
+  const tb=el('div',{style:'display:flex;align-items:center;gap:10px;margin-bottom:10px'});
+  const info=el('span',{cls:'muted',style:'font-size:12px'},'加载中…');
+  const stopBtn=el('button',{cls:'small'},'⏸ 停止刷新'); stopBtn.disabled=true;
+  tb.append(info, el('span',{style:'flex:1'}), stopBtn);
+  body.append(tb);
+  const pre=el('pre',{cls:'log'},'');
+  body.append(pre);
   if(!$('#dlg').open) $('#dlg').showModal();
+  let offset=0, total=0;
+  async function poll(){
+    const r=await api('/api/log?path='+encodeURIComponent(path)+'&offset='+offset);
+    if(!r.ok){ info.textContent=r.error||'读取失败'; return; }
+    if(r.lines && r.lines.length){
+      pre.textContent += r.lines.join('');
+      offset += r.lines.length;
+      total = r.total;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    info.textContent = total+' 行' + (offset>=total?' (已全部加载)':' (实时跟踪中…)');
+    stopBtn.disabled=false;
+  }
+  await poll();
+  _LOG_POLL = setInterval(poll, 2000);
+  stopBtn.onclick = ()=>{
+    if(_LOG_POLL){ clearInterval(_LOG_POLL); _LOG_POLL=null; stopBtn.textContent='▶ 恢复刷新'; }
+    else { _LOG_POLL=setInterval(poll,2000); stopBtn.textContent='⏸ 停止刷新'; }
+  };
+  /* dialog 关闭时清理 */
+  $('#dlg').onclose = ()=>{ if(_LOG_POLL){clearInterval(_LOG_POLL);_LOG_POLL=null;} };
 }
 
 /* ============================ 功能/精度 共用状态卡 ============================ */

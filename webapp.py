@@ -570,15 +570,22 @@ def api_project_stop(pid: str):
 
 
 @app.get("/api/log")
-def api_log(path: str):
+def api_log(path: str, offset: int = 0, tail: int = 0):
+    """读取日志文件。offset=从第几行开始(0-based)；tail=只返回最后 N 行(与 offset 互斥)。"""
     ap = os.path.abspath(path)
-    if not ap.startswith(os.path.abspath(KIT_ROOT)):
+    B = os.path.abspath(KIT_ROOT)
+    if not (ap == B or ap.startswith(B + os.sep)):
         return JSONResponse({"ok": False, "error": "路径越界"}, status_code=400)
     if not os.path.exists(ap):
-        return {"ok": False, "error": "文件不存在", "lines": []}
+        return {"ok": False, "error": "文件不存在", "lines": [], "total": 0}
     with open(ap, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.readlines()
-    return {"ok": True, "lines": lines[-400:]}
+        all_lines = f.readlines()
+    total = len(all_lines)
+    if tail > 0:
+        return {"ok": True, "lines": all_lines[-tail:], "total": total}
+    if offset > 0:
+        return {"ok": True, "lines": all_lines[offset:], "total": total, "offset": offset}
+    return {"ok": True, "lines": all_lines[-800:], "total": total}
 
 
 # ----------------------------------------------------- 功能/精度测试 -------
