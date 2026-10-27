@@ -11,7 +11,7 @@
 #   bash run.sh --report [--npu 16] # 汇总已有摸高结果
 #   bash run.sh --accuracy          # 后台跑精度（accuracy_runner.py, 日志 acc_*.log）
 #   bash run.sh --accuracy -f       # 前台跑精度
-#   bash run.sh --functional        # 后台跑功能检查（functional_runner.py, 日志 func_*.log）
+#   bash run.sh --functional        # 后台跑功能检查（scripts/run_api_e2e.py, 日志 func_*.log）
 #   bash run.sh --functional -f     # 前台跑功能检查
 # ============================================================================
 set -u
@@ -25,13 +25,16 @@ PREFIX="run"
 case "${1:-}" in
   --report)     shift; exec "$PY" report.py "$@" ;;
   --accuracy)   shift; RUNNER="accuracy_runner.py"; PREFIX="acc" ;;
-  --functional) shift; RUNNER="functional_runner.py"; PREFIX="func" ;;
+  --functional) shift; RUNNER="scripts/run_api_e2e.py"; PREFIX="func" ;;
   *)            ;;
 esac
 
 TS=$(date +%Y%m%d_%H%M%S)
-LOG="logs/${PREFIX}_${TS}.log"
-mkdir -p logs
+# 日志目录: LOG_DIR 环境变量可改（默认 kit 内 logs/）。日志走本地盘/共享盘时用:
+#   LOG_DIR=/path/to/logs bash run.sh --accuracy
+LOG_DIR="${LOG_DIR:-$PWD/logs}"
+LOG="${LOG_DIR}/${PREFIX}_${TS}.log"
+mkdir -p "$LOG_DIR"
 
 if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "--dry-run" ] || [ "${1:-}" = "--gen-datasets" ] || [ "${1:-}" = "--list" ]; then
   # 注意: exec 在管道里不会终止脚本（只替换管道子进程）, 前台跑完必须显式 exit,

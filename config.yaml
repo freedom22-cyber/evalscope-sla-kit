@@ -11,11 +11,14 @@
 
 service:
   # 被测服务 OpenAI 兼容端点（chat completions 完整路径）
-  url: http://192.168.0.120:9826/v1/chat/completions
+  # MaaS 网关：路径含应用 id（app id = 2f62fe2b-43ab-4780-bfc0-a35d55f779ad）
+  url: http://113.46.2.168/v2/infer/2f62fe2b-43ab-4780-bfc0-a35d55f779ad/v1/chat/completions
   # 服务端 served model 名（必须与服务配置一致，否则 404/模型不存在）
-  model: glm
+  # GET <url 去掉 /v1/chat/completions>/v1/models 可查；当前服务暴露 glm5.3
+  model: glm5.3
   # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
-  tokenizer_path: /data/models/GLM-5.3-W8A8C8
+  # 对应权重 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx）
+  tokenizer_path: /mnt/sfs_turbo/models/GLM-5.3-w4a4c8-mxfp4
 
 request:
   # 是否在请求头中加 Host 参数（经过 LB/代理/网关按域名路由时需要）
@@ -26,7 +29,8 @@ request:
   extra_headers: []
   #  - "Authorization=Bearer xxx"
   # API key（可选，设置后自动加 Authorization: Bearer <api_key>）
-  api_key: ""
+  # 网关不校验 token，沿用 sunzhi 约定填 EMPTY（evalscope --api-key 也需要非空）
+  api_key: "EMPTY"
 
 benchmark:
   # 摸高并发搜索区间 [lower, upper]
@@ -127,9 +131,9 @@ scenarios:
 # ----------------------------------------------------------------------------
 # 用法: bash run.sh --accuracy            # 后台跑所有启用数据集组
 #       bash run.sh --accuracy -f         # 前台
-#       python3 accuracy_runner.py --list / --dry-run / --only gsm8k / --report
+#       python3 accuracy_runner.py --list / --dry-run / --only all5 / --report
 # 数据集行格式（逗号分隔, 顺序固定）:
-#   "tag, evalscope_datasets, rounds, effort, max_tokens, batch_size"
+#   "tag, evalscope_datasets, rounds, effort, max_tokens, batch_size [, k]"
 #   tag              : 数据集组名（结果目录 results/accuracy/<tag>_r<N>/）
 #   evalscope_datasets: 传给 --datasets 的值（空格分隔多个, 如 "aime25 aime26"）
 #   rounds           : 重复轮数（每轮独立 work-dir, 便于算均值/方差）
@@ -137,6 +141,12 @@ scenarios:
 #                      在部分服务上是已知 400 缺陷, 见 sunzhi 仓 F-03）
 #   max_tokens       : 生成上限
 #   batch_size       : --eval-batch-size
+#   k                :（可选）pass@k 的采样次数。默认 1 = 单次 mean 口径（不加
+#                      --repeats）; k>1 时每题采样 k 次, evalscope 按
+#                      aggregation=mean_and_pass_at_k 聚合, 结果同时给出
+#                      mean 与 pass@1..pass@k, 请求量 x k, 结果目录为
+#                      results/accuracy/<tag>_pass@k<k>_r<N>/（与 k=1 的结果隔开,
+#                      且不同 k 各占一个目录, 互不覆盖）
 # ============================================================================
 accuracy:
   # evalscope 可执行文件（也可被环境变量 EVALSCOPE_BIN 覆盖, 与 performance/env.sh 同名约定）
@@ -145,21 +155,37 @@ accuracy:
   # 被测服务地址会自动加入 no_proxy）
   proxy: ""
   datasets:
-    - "gsm8k, gsm8k, 1, max, 131072, 32"
-    - "mmlu, mmlu, 1, max, 131072, 32"
-    - "gpqa, gpqa_diamond, 1, max, 131072, 32"
-    - "aime, aime25 aime26, 1, max, 131072, 32"
+    # 一条命令跑全部 5 个数据集（--datasets 后每个名字必须是独立 argv 元素,
+    # runner 会把本字段按空格拆开逐个传; 拼成一个元素会被 evalscope 当成
+    # 单个基准名报 Benchmark not found）
+    # k=4: pass@k 口径（每题采样 4 次, 请求量 x4, 输出 mean + pass@1..pass@4）
+    - "all5, gpqa_diamond aime25 aime26 gsm8k mmlu, 1, max, 131072, 32, 4"
 
 # ============================================================================
-# 功能测试（迁移自 sunzhi_sla_eval cmd_functional, Python 原生 urllib 实现）
+# 功能测试（scripts/run_api_e2e.py, Simaas 风格 API E2E 框架）
 # ----------------------------------------------------------------------------
-# 用法: bash run.sh --functional            # 后台跑全部检查
+# 用法: bash run.sh --functional            # 后台跑全部用例（日志 logs/func_*.log）
 #       bash run.sh --functional -f         # 前台
-#       python3 functional_runner.py --list / --dry-run / --only F-01a,F-03
-# 判定口径: PASS / FAIL / KNOWN-DEFECT（已知缺陷, 不计 FAIL）/ SKIP
-# 已知缺陷: reasoning_effort="medium" 在部分服务上必 400（sunzhi F-03 沉淀）
+#       python3 scripts/run_api_e2e.py --list / --dry-run / --only F-03
+#       python3 scripts/run_api_e2e.py --base-url https://116.204.8.3/infer7 \
+#           --model 'glm-5' --header 'Host: sz.glm5.com' --skip-bench \
+#           --capability-repeat 10 --insecure
+# 判定口径: PASS / FAIL（计入退出码）/ WARN（已知缺陷, 不计 FAIL）/ SKIP
+# 已知缺陷: reasoning_effort="medium" 在部分服务上必 400 -> 记 WARN（F-03_medium）
 # ============================================================================
 functional:
-  timeout_s: 60                    # 单请求超时（秒）
+  # 单请求超时（秒）。思考型模型单次回答可能几十秒, 且 MaaS 网关有 60s 首字节
+  # 超时——功能用例的 chat 走流式, 但整体仍给足超时
+  timeout_s: 300
+  # 输出预算（max_tokens）。GLM-5.3 强制思考, 预算太小会被思考链吃光导致正文为空
+  max_tokens: 2048
   efforts: [low, high, xhigh, max] # F-03 effort 矩阵（medium 由 F-03_medium 专项检查）
-  skip: []                         # 跳过的检查 tag, 如 [F-05_claude]
+  skip: []                         # 跳过的用例 tag, 如 [F-05_claude]
+  # 接口协议族: openai / messages / gemini / embedding（可多选; 当前服务只暴露 openai）
+  interface_types: [openai]
+  # capability 类用例（/category 以 capability 结尾）重复轮数, 用于抖动检测
+  capability_repeat: 1
+  # 长上下文召回（8k 填充 + needle）默认关闭: 推理模型上耗时高, 需要时置 false
+  skip_long_context_api: true
+  long_context_api_tokens: 8192    # 长上下文填充 token 数
+  output_dir: results/functional   # 报告与各用例响应原文的落盘根目录

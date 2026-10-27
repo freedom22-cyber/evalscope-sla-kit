@@ -274,9 +274,18 @@ def build_evalscope_cmd(cfg: dict, sc: dict, dataset_path: str = None) -> list:
 
 
 def health_probe_url(svc: dict) -> str:
-    """健康探活地址: 服务 url 的 scheme://netloc + /v1/models"""
-    u = urlsplit(svc["url"])
-    return f"{u.scheme}://{u.netloc}/v1/models"
+    """健康探活地址: 服务 url 的 base + /v1/models
+
+    注意不能只取 scheme://netloc——MaaS 网关的路径带应用 id
+    (/v2/infer/<app-id>/v1/chat/completions), 丢掉前缀会探到一个网关不提供的
+    路径, 压测期间误报"服务已挂"。
+    """
+    url = svc["url"].rstrip("/")
+    for suffix in ("/chat/completions", "/completions"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
+    return f"{url}/models"
 
 
 def probe_alive(url: str) -> bool:

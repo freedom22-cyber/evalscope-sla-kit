@@ -11,8 +11,9 @@ evalscope_sla_kit/
 ├── run.sh              # 入口（后台/前台/dry-run/单场景；--accuracy 分发精度、--functional 分发功能）
 ├── config.yaml         # 全部配置：服务地址、模型名、Host 头开关、场景清单、精度数据集组、功能检查参数
 ├── runner.py           # 摸高: 场景解析 + 数据集生成 + evalscope 命令构建执行
-├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + accuracy 分数解析汇总
-├── functional_runner.py # 功能: F-01~F-05 检查（urllib 直发, PASS/FAIL/KNOWN-DEFECT/SKIP 四类判定）
+├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + pass@k/mean 分数解析汇总
+├── functional_runner.py # 功能测试兼容壳（转发到 scripts/run_api_e2e.py）
+├── scripts/           # 功能测试主脚本: scripts/run_api_e2e.py（API E2E 框架）
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI）
 ├── web/index.html      # Web 控制台前端（三视图单页）
@@ -20,7 +21,8 @@ evalscope_sla_kit/
 ├── datasets/           # 生成的数据集落盘处（按文件名复用）
 ├── results/            # 摸高输出: results/<场景ID>/<时间戳>/<model>/
 │   ├── accuracy/       # 精度输出: accuracy/<tag>_r<N>/reports/<model>/<ds>.json + scores.md
-│   └── functional/     # 功能输出: functional/oneclick_<时间戳>/（各检查响应原文 + summary.md）
+│   │                   #   (pass@k 口径目录为 <tag>_pass@k<k>_r<N>/)
+│   └── functional/     # 功能输出: functional/e2e_<时间戳>/（report.md + 各用例响应原文）
 └── logs/               # 运行日志（摸高 run_*.log / 精度 acc_*.log / 功能 func_*.log / Web 日志）
 ```
 
@@ -68,15 +70,21 @@ python3 report.py --npu 8   # 8 卡时输出单卡吞吐列
 
 迁移自 sunzhi_sla_eval `run208.sh cmd_accuracy` 的通用化版本：对被测服务跑
 evalscope eval 数据集组（gsm8k / mmlu / gpqa_diamond / aime25+aime26 …），
-逐组逐轮顺序执行并解析 accuracy 分数。**宿主机直跑**（不走 docker，setup.sh 已装
+逐组逐轮顺序执行并解析精度分数。**宿主机直跑**（不走 docker，setup.sh 已装
 evalscope），只依赖 evalscope + pyyaml。
+
+精度口径 = **pass@k**（k 可配）：每题重复采样 k 次，evalscope 用
+`aggregation=mean_and_pass_at_k` 聚合，结果同时给出 **mean**（k 次采样平均）与
+**pass@1..pass@k**（k 次里至少对一次的概率）。`k=1` 退化为原来的单次 mean 口径
+（不加 `--repeats`，请求量不变）。
 
 ```bash
 bash run.sh --accuracy                      # 后台跑所有启用数据集组（日志 logs/acc_*.log）
 bash run.sh --accuracy -f                   # 前台跑（看实时输出）
-python3 accuracy_runner.py --list           # 列出启用的数据集组
+python3 accuracy_runner.py --list           # 列出启用的数据集组（含 k 与口径）
 python3 accuracy_runner.py --dry-run        # 只打印命令与 work-dir，不执行
-python3 accuracy_runner.py --only gsm8k,aime  # 只跑指定组
+python3 accuracy_runner.py --only all5       # 只跑指定组（tag 见 --list）
+python3 accuracy_runner.py --k 4            # 临时覆盖 pass@k 的 k（覆盖 config）
 python3 accuracy_runner.py --report         # 不跑测试，重打已有结果汇总表
 ```
 
@@ -85,21 +93,36 @@ python3 accuracy_runner.py --report         # 不跑测试，重打已有结果�
 数据集行格式（逗号分隔，顺序固定）：
 
 ```
-"tag, evalscope_datasets, rounds, effort, max_tokens, batch_size"
+"tag, evalscope_datasets, rounds, effort, max_tokens, batch_size [, k]"
 ```
 
 | 字段 | 说明 |
 |---|---|
-| `tag` | 数据集组名，结果目录 `results/accuracy/<tag>_r<N>/` |
+| `tag` | 数据集组名，结果目录 `results/accuracy/<tag>_r<N>/`（k>1 时为 `<tag>_pass@k<k>_r<N>/`） |
 | `evalscope_datasets` | 传给 `--datasets` 的值（空格分隔多个，如 `aime25 aime26`） |
 | `rounds` | 重复轮数，每轮独立 work-dir，便于算均值/方差 |
 | `effort` | `reasoning_effort`（见下方已知缺陷提醒） |
 | `max_tokens` | 生成上限 |
 | `batch_size` | `--eval-batch-size` |
+| `k` |（可选）pass@k 的采样次数，默认 `1` = 单次 mean 口径；`k>1` 时请求量 × k |
 
 其他键：`evalscope_bin`（evalscope 可执行文件，可被环境变量 `EVALSCOPE_BIN`
 覆盖）；`proxy`（非空时给子进程导出 `http_proxy`/`https_proxy`——evalscope 首次
 下载评测集需要外网；被测服务主机名自动加入 `no_proxy` 防劫持，不污染父进程环境）。
+
+### pass@k 口径怎么落地
+
+k>1 时 runner 在 evalscope 命令上追加两个参数（其余参数与单次口径一致）：
+
+```
+--repeats <k>
+--dataset-args '{"<每个数据集>": {"aggregation": "mean_and_pass_at_k"}}'
+```
+
+`--repeats` 让每题被复制 k 份各采样一次（evalscope 内部按 `group_size=k`
+重新分组），`mean_and_pass_at_k` 聚合器据此算出 mean 与 pass@1..pass@k。
+结果目录与 k=1 的单次口径分开（`<tag>_pass@k<k>_r<N>`），不同 k 也各占一个目录，
+两种口径/各 k 的结果不会互相覆盖。
 
 ### reasoning_effort 已知缺陷
 
@@ -111,76 +134,138 @@ sunzhi 仓 F-03 / docs/lessons_api208.md §4），配置时避开。
 ### 结果与汇总
 
 - 每组每轮跑完即打印 `  [tag_r1] gsm8k: score=0.94 (n=1319)`；
-  多轮同组结束后打印均值。
-- 分数来源：`results/accuracy/<tag>_r<N>/reports/<model>/<ds>.json`，取 `metrics`
-  里 `identity.name=="accuracy"` 的 `score` / `num`（缺失文件按缺失提示，不中断）。
-- 每次跑完追加写 `results/accuracy/scores.md`（时间戳头 + tag/轮/数据集/score/n 表）；
-  `--report` 可随时重打汇总表。
+  pass@k 口径再追加一行 `  [tag_r1] gsm8k: pass@1=0.87  pass@2=0.94  ...`；
+  多轮同组结束后打印均值（mean 与各 pass@k 分别平均）。
+- 分数来源：`results/accuracy/<tag>_r<N>/reports/<model>/<ds>.json` 的 `metrics`：
+  `identity.aggregation=="mean"` 的 `score`/`num`（mean 口径），
+  `identity.aggregation=="pass_at_k"` 且 `identity.dimensions.k==n` 的 `score`
+  （pass@n）。文件缺失/解析失败按缺失提示，不中断。
+- 每跑完一轮就追加写 `results/accuracy/scores.md`（时间戳头 + tag/轮/数据集/mean/n +
+  pass@1..pass@k 列），中途被打断也保留已完成轮次；`--report` 可随时重打汇总表。
+- 分组 key 带 k（`all5_pass@k4`），所以 k=1 与 k=4 的同 tag 结果**不会**被当成
+  两轮混在一起算均值，实时表与 `--report` 表的 tag 也一致。
+- 退出码：任一组失败 → 1；**evalscope 退出码 0 但没解析到分数也按假通过记 1**
+  （报告缺失 / 指标为空 / 报告结构变化都会落到这里）；`--only` 含未知 tag → 2。
 
-## 功能测试（functional_runner.py）
+## 功能测试（scripts/run_api_e2e.py）
 
-迁移自 sunzhi_sla_eval `run208.sh cmd_functional` 的通用化版本：对被测服务跑一组
-OpenAI 协议功能检查（chat/completions/流式/截断/stop/确定性/thinking 开关/effort
-矩阵/tool call/错误处理）。**纯标准库 urllib 发请求**（不依赖 curl/requests），
-请求头复用 `runner.build_headers()`（Host 开关 / extra_headers / api_key 全部生效），
-直连不走 http_proxy（等价 `curl --noproxy '*'`）。
+Simaas 风格 API E2E 框架：对被测服务跑一组端到端检查，覆盖四种接口协议族
+（**openai / messages / gemini / embedding**），并把原来的 F-01~F-05 专有检查
+一并迁进同一套框架。纯标准库 urllib 发请求（不依赖 curl/requests），直连不走
+http_proxy（等价 `curl --noproxy '*'`）。
 
 ```bash
-bash run.sh --functional                        # 后台跑全部检查（日志 logs/func_*.log）
+bash run.sh --functional                        # 后台跑全部用例（日志 logs/func_*.log）
 bash run.sh --functional -f                     # 前台跑（功能检查耗时短，一般直接前台）
-python3 functional_runner.py --list             # 列出全部检查 tag 与说明
-python3 functional_runner.py --dry-run          # 只打印检查清单，不发任何请求
-python3 functional_runner.py --only F-01a,F-03  # 只跑指定检查（精确 tag 或前缀组）
+python3 scripts/run_api_e2e.py --list           # 列出全部用例（含 tag / 重复轮数）
+python3 scripts/run_api_e2e.py --dry-run        # 只打印计划，不发任何请求
+python3 scripts/run_api_e2e.py --only F-03      # 只跑指定用例（tag 或前缀组）
+python3 scripts/run_api_e2e.py --interface-types openai,messages   # 多协议族
 ```
 
-### 检查清单与判定口径
+跨机器 / 临时目标可用纯 CLI 方式（config.yaml 不参与）：
 
-| tag | 内容 | 判定 |
+```bash
+python3 scripts/run_api_e2e.py \
+    --base-url https://116.204.8.3/infer7 --model 'glm-5' \
+    --header 'Host: sz.glm5.com' --skip-bench --capability-repeat 10 --insecure
+```
+
+### 判定口径
+
+| 判定 | 含义 | 计入退出码 |
 |---|---|---|
-| `F-01a_chat` | chat 非流式 | 200 且响应含 `content` → PASS |
-| `F-01b_stream` | chat 流式 SSE | 文本含 `data:` 与 `[DONE]` → PASS |
-| `F-01c_completions` | `/v1/completions` 非流式基础 | 200 → PASS |
-| `F-01d_maxtok` | max_tokens=8 截断 | 200 且 `usage.completion_tokens<=8` → PASS |
-| `F-01e_stop` | `stop` 参数 | 不报错（200）→ PASS |
-| `F-01f_determ` | temperature=0 两次请求 | 文本一致 → PASS（参考项） |
-| `F-02a_think_on` | 默认 thinking | 响应含 `reasoning(_content)?` 字段 → PASS |
-| `F-02b_think_off` | `reasoning_effort=none` | reasoning 内容为空 → PASS |
-| `F-03_low/high/xhigh/max` | effort 矩阵（`functional.efforts` 可配） | 200 → PASS |
-| `F-03_medium` | effort=medium 专项 | **恒记 KNOWN-DEFECT**（见下） |
-| `F-04_toolcall` | tools 触发 | 响应含 `tool_calls` → PASS |
-| `F_err_4xx` | 错误模型名 | 返回 4xx → PASS（2xx/5xx/网络失败 → FAIL） |
-| `F-05_claude` | claude code 会话 | 有/无 claude CLI 均记 SKIP（会话需人工按 docs 跑） |
+| PASS | 正常 | 否 |
+| FAIL | 失败 | **是** |
+| WARN | 已知缺陷 / 可接受异常（`reasoning_effort=medium` 的 400、非法档位被静默接受、能力探测端点该服务未实现、正文为空但思考链吃满 `max_tokens`、effort 档位没产生思考内容） | 否 |
+| SKIP | 主动跳过（config `functional.skip`、该协议族未启用） | 否 |
 
-### KNOWN-DEFECT 语义与 medium 缺陷
+退出码：任一 FAIL → 1；否则 0。`--only` 含未知 tag → 2。
 
-判定分四类：**PASS / FAIL / KNOWN-DEFECT / SKIP**，只有 FAIL 计入退出码。
-`F-03_medium`（`reasoning_effort="medium"`）在部分部署上**必 HTTP 400**（服务端
-chat template 校验拒绝，sunzhi 仓 F-03 确定性复现 4 次，等效替代为整数分档
-`chat_template_kwargs.reasoning_effort: 50`）：
+### chat 用例为什么一律走流式
 
-- 返回 400 = 已知缺陷仍在，记 KNOWN-DEFECT，不计 FAIL；
-- 返回 200 = 可能已修复，仍记 KNOWN-DEFECT，说明列提示人工确认。
+MaaS 网关（`113.46.2.168`）有 **60s 首字节超时**：非流式请求的首字节等于整个响应，
+思考型模型的长回答必然踩雷（网关返 504，看起来像服务坏了）。所以 `chat` 类用例
+一律用流式（`stream=True`），首字节压到第一个 token，框架把 SSE 事件聚合成
+chat-completion 形状再交给同一套校验器。
+
+另一个坑：**GLM-5.3 强制思考**，输出预算太小会被思考链吃光、正文为空。旧 runner
+的 F-01a 用子串匹配 `"content"` 判过（值为 `null` 也算 PASS），现在改成"正文非空"
+才算过——所以 `functional.max_tokens` 默认给到 2048；正文为空但有思考链时记 **WARN**
+（预算问题，不是协议问题）。
+
+### 用例清单
+
+框架标准用例（按协议族分 category）：
+
+| category | 用例 | 检查点 |
+|---|---|---|
+| openai/compatibility | models list / chat completions / completions / responses | 端点可用、响应非空 |
+| openai/streaming | chat streaming | 有 JSON 事件、有文本增量、`[DONE]` 结束标记 |
+| openai/structured-output | json object | 输出可解析为 JSON |
+| openai/context | multi-turn recall / long-context recall | 多轮与长上下文召回 needle |
+| openai/finops | chat usage | usage 字段齐全且 total ≈ prompt + completion |
+
+F-01~F-05 专有检查（已迁入同一框架，tag 沿用原编号，`--only F-03` 可按前缀组过滤）：
+
+| tag | 用例 | 检查点 | category |
+|---|---|---|---|
+| `F-01a` | chat 基本可用 | 200 且正文非空（空正文但有思考链记 WARN） | openai/compatibility |
+| `F-01b` | chat 流式 | SSE 含 `data:` 与 `[DONE]`（**缺 `[DONE]` 记 FAIL**，沿用旧口径） | openai/streaming |
+| `F-01c` | completions | 基础可用 | openai/compatibility |
+| `F-01d` | max_tokens 截断 | `usage.completion_tokens <= 8` | openai/robustness |
+| `F-01e` | stop 参数 | 不报错 | openai/robustness |
+| `F-01f` | 确定性 | temperature=0 连发两次结果一致 | openai/robustness |
+| `F-02a` | thinking 开 | 响应含 reasoning 字段 | openai/capability |
+| `F-02b` | thinking 关 | `reasoning_effort=none` 时 reasoning 为空 | openai/capability |
+| `F-03_<effort>` | effort 矩阵 | `reasoning_effort=low/high/xhigh/max` 返回 200 **且有思考内容**（无思考内容记 WARN：档位可能被静默降级） | openai/capability |
+| `F-03_medium` | effort=medium 专项 | 记 WARN（400=缺陷仍在；200=非法档位被静默接受需人工确认；**5xx/网络异常记 FAIL**） | openai/capability |
+| `F-04` | tool call | tools 触发后响应含 `tool_calls` | openai/capability |
+| `F_err` | 错误模型名 | 必须返回 4xx | openai/robustness |
+| `F-05` | claude code 会话 | 恒记 SKIP（真会话见 `tools/f05_claude_code.sh`） | openai/session |
 
 ### config.yaml functional 段
 
 ```yaml
 functional:
-  timeout_s: 60                    # 单请求超时（秒）
-  efforts: [low, high, xhigh, max] # F-03 effort 矩阵（medium 由 F-03_medium 专项检查）
-  skip: []                         # 跳过的检查 tag, 如 [F-05_claude]
+  timeout_s: 300                   # 单请求超时（秒）
+  max_tokens: 2048                 # 输出预算（思考型模型太小会被思考链吃光）
+  efforts: [low, high, xhigh, max] # F-03 effort 矩阵
+  skip: []                         # 跳过的用例 tag, 如 [F-05_claude]
+  interface_types: [openai]        # openai / messages / gemini / embedding
+  capability_repeat: 1             # capability 类用例重复轮数（抖动检测）
+  skip_long_context_api: true      # 长上下文召回默认关闭
+  long_context_api_tokens: 8192    # 长上下文填充 token 数
+  output_dir: results/functional   # 报告与响应原文落盘根目录
 ```
 
-段可整体缺省（取以上默认值）。`skip` 中的 tag 不发请求、summary 记 SKIP；
-`--only` 不覆盖 skip，需强制执行请先从 skip 移除。
+配置来源：**config.yaml 为主**（`service` / `request` / `functional` 段），
+优先级 **命令行参数 > 环境变量（`BASE_URL` / `OPENAI_BASE_URL` / `API_KEY`）>
+config.yaml**。
+
+base URL 的归一化：三种写法都能直接用，脚本统一还原成 base 再拼
+`/{api_version}/{endpoint}`，不会拼出 `/v1/v1/...`：
+
+| 输入 | 还原后的 base | 实际请求 |
+|---|---|---|
+| `http://h/v2/infer/app/v1/chat/completions`（config 的 service.url） | `http://h/v2/infer/app` | `http://h/v2/infer/app/v1/chat/completions` |
+| `http://h/infer7`（--base-url） | `http://h/infer7` | `http://h/infer7/v1/chat/completions` |
+| `http://h/v1`（OPENAI_BASE_URL 常见写法） | `http://h/v1` | `http://h/v1/chat/completions` |
+
+### capability 重复与抖动检测
+
+category 以 `/capability` 结尾的用例（thinking 开关、effort 矩阵、tool call 等）
+受 `--capability-repeat N` 控制，默认 1 轮。重复时每轮各占一行（报告里标
+`run i/N`），响应原文落盘为 `<slug>.r<i>.json`——用于识别"单次能过、偶发失败"
+的抖动。
 
 ### 结果文件与退出码
 
-- 响应原文逐项落盘 `results/functional/oneclick_<时间戳>/`（f01a.json、f01b.sse、
-  f03_medium.json …，命名仿 sunzhi），汇总表 `summary.md` 为
-  `| 检查 | 实际 | 判定 | 说明 |` 表 + `PASS=n FAIL=n KNOWN-DEFECT=n SKIP=n` 计数行。
-- 退出码：**任一 FAIL → 1**（KNOWN-DEFECT / SKIP 不算失败）；全部通过 → 0；
+- 报告：`results/functional/e2e_<时间戳>/report.md`（Summary + Cases 表 +
+  Failures 段 + Warnings 段），各用例响应原文同目录落盘（`<slug>.json`）。
+- 退出码：**任一 FAIL → 1**（WARN / SKIP 不算失败）；全部通过 → 0；
   `--only` 含未知 tag → 2。
-- 单项检查抛异常不中断整轮，该项记 FAIL（实际值 `EXC`）。
+- 单条用例抛异常不中断整轮，该条记 FAIL。
 
 ## config.yaml 说明
 
