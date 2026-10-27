@@ -3,6 +3,14 @@
 对 OpenAI 兼容推理服务（vLLM / MindIE / 路由网关等）做 **evalscope 摸高测试**：
 `--sla-auto-tune` 二分搜索满足 SLA 判据（TTFT / TPOT）的**最大并发数**。
 
+本工程有三条测试线，共用一份 `config.yaml`：
+
+| 测试线 | 入口 | 产出 |
+|---|---|---|
+| 摸高（性能） | `bash run.sh` | `results/<场景ID>/…/sla_summary.json` + `report.py` 汇总表 |
+| 精度（pass@k） | `bash run.sh --accuracy` | `results/accuracy/<tag>_pass@k<k>_r<N>/…` + `scores.md` |
+| 功能（API E2E） | `bash run.sh --functional` | `results/functional/e2e_<时间戳>/report.md` + 各用例响应原文 |
+
 ## 目录结构
 
 ```
@@ -17,7 +25,9 @@ evalscope_sla_kit/
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI）
 ├── web/index.html      # Web 控制台前端（三视图单页）
-├── tools/              # gsm8k 数据集生成工具（aisbench）+ jsonl→prompts 转换
+├── tools/              # 工具脚本: gsm8k 数据集生成（aisbench）/ jsonl→prompts 转换
+│                       #   + f05_claude_code.sh（claude CLI 会话）
+│                       #   + wait_service_passk.sh / queue_passk.sh（pass@k 排队守护）
 ├── datasets/           # 生成的数据集落盘处（按文件名复用）
 ├── results/            # 摸高输出: results/<场景ID>/<时间戳>/<model>/
 │   ├── accuracy/       # 精度输出: accuracy/<tag>_r<N>/reports/<model>/<ds>.json + scores.md
@@ -298,11 +308,15 @@ category 以 `/capability` 结尾的用例（thinking 开关、effort 矩阵、t
 
 ### scenarios 段（场景开关）
 
-每行一个场景，7 个逗号分隔字段：
+每行一个场景，7 个逗号分隔字段（第 8 个可选）：
 
 ```
-"dataset, input_len, output_len, cache_hit_rate, prefix_num, ttft_sla_ms, tpot_sla_ms"
+"dataset, input_len, output_len, cache_hit_rate, prefix_num, ttft_sla_ms, tpot_sla_ms [, dataset_num]"
 ```
+
+第 8 个 `dataset_num` 只对 `gsm8k` 有效：该场景的数据集条数（不填 = 用
+`dataset.gsm8k_number` 全局默认）。相同 `(input_len, hit_rate, dataset_num)`
+的数据集只生成一次，按文件名复用。
 
 - `dataset`: `random`（evalscope 在线生成，天然 0% 缓存命中）或 `gsm8k`（本地生成定长数据集）
 - 长度支持 `k` 简写：`1k`=1024、`1000k`=1024000
@@ -363,6 +377,24 @@ bash run.sh --only gsm8k_64k_1k_hit30pct   # 只重跑一个场景
 - 每表末尾给结论：`SLA 判定: 最大达标并发 = N` 或
   `SLA 判定: 无达标档（Failed at lower bound）`。
 
+## 工具脚本（tools/）
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/gen_dataset_only.py` / `tools/generate_dataset.py` | gsm8k 定长数据集生成（aisbench） |
+| `tools/jsonl_to_prompts.py` | jsonl → 纯文本 prompts.txt |
+| `tools/data_picker.py` | 数据集挑选 |
+| `tools/f05_claude_code.sh` | F-05 claude code CLI 会话（问答 + 工具调用）自动化；`functional_runner.py` 里的 F-05 只做存在性检查（恒 SKIP），真会话跑这个脚本 |
+| `tools/wait_service_passk.sh` | 守护：等 ModelArts 服务恢复健康后自动启动 pass@k 评测（健康判定走 `/v1/models` + 极小流式对话，**curl 一律 `--noproxy '*'`**） |
+| `tools/queue_passk.sh` | 守护：等前序精度评测退出后自动启动 pass@k 评测（等"没有精度进程在跑"，不是等写死的 PID） |
+
+两个守护脚本都用锁目录防双跑，地址/模型从 `config.yaml` 的 `service` 段读，
+不写死在脚本里。
+
+```bash
+setsid nohup bash tools/wait_service_passk.sh > logs/acc_passk_queue.log 2>&1 &
+```
+
 ## 已知坑（实测教训）
 
 1. **`Dataset is empty!`**：gsm8k jsonl 没转纯文本 prompts.txt，或
@@ -382,3 +414,19 @@ bash run.sh --only gsm8k_64k_1k_hit30pct   # 只重跑一个场景
    `tools/picked_ids.txt` 重跑。
 8. **thinking 模型**必须 `chat_template_kwargs.thinking=false`（见上）。
 9. **`ignore_eos: true`** 让输出固定到 max_tokens，TPOT/吞吐才可比（默认已开）。
+10. **MaaS 网关有 60s 首字节超时**：非流式请求的首字节 = 整个响应，思考型模型的
+    长回答必然踩雷（网关返 504，看起来像服务坏了）。功能用例的 chat 一律走流式，
+    精度评测的 generation-config 也必须带 `stream: true`。
+11. **思考型模型（GLM-5.3 强制思考）的输出预算**：预算太小会被思考链吃光、正文
+    为空（`content: null` + `finish_reason: length`）。功能用例给
+    `functional.max_tokens: 2048`；旧代码用子串匹配 `"content"` 判过（值为
+    `null` 也算 PASS），现在改成"正文非空"才算过。
+12. **环境里的 `http_proxy` 会劫持内网请求**：功能测试与健康探测都要绕开它——
+    curl 加 `--noproxy '*'`，python 用 `build_opener(ProxyHandler({}))`。不绕的
+    话健康探测会一直拿不到 200（守护脚本就会空等）。精度评测是另一回事：
+    `accuracy.proxy` 非空时是**故意**给子进程导出代理给数据集首次下载用，
+    同时把被测服务主机名塞进 `no_proxy`。
+13. **退出码 0 不等于通过**：精度评测 evalscope 退出 0 但没解析到分数（报告缺失 /
+    指标为空 / 报告结构变化）同样是假通过，runner 按 exit 1 处理。
+14. **显式指定的路径找不到就照实报错**：不要用"本机已知路径"兜底覆盖显式配置，
+    否则两台机器会静默跑不同版本的 evalscope，分数不可比。
