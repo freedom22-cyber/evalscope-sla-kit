@@ -964,11 +964,25 @@ document.addEventListener('click', e=>{
     const curls=card&&card._curls;
     const idx=+b.dataset.curl;
     if(curls&&curls[idx]){
-      navigator.clipboard.writeText(curls[idx]).then(()=>{ toast('curl 已复制到剪贴板'); b.textContent='已复制'; setTimeout(()=>b.textContent='复制 curl',1500); })
-        .catch(()=>{ toast('复制失败，请手动选择'); });
+      const text=curls[idx];
+      // 优先 Clipboard API（HTTPS），fallback execCommand（HTTP）
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(()=>{ toast('curl 已复制到剪贴板'); b.textContent='已复制'; setTimeout(()=>b.textContent='复制 curl',1500); })
+          .catch(()=>{ fallbackCopy(text,b); });
+      } else {
+        fallbackCopy(text,b);
+      }
     }
   }
 });
+function fallbackCopy(text,btn){
+  const ta=document.createElement('textarea');
+  ta.value=text; ta.style.position='fixed'; ta.style.left='-9999px';
+  document.body.append(ta); ta.select();
+  try { document.execCommand('copy'); toast('curl 已复制到剪贴板'); btn.textContent='已复制'; setTimeout(()=>btn.textContent='复制 curl',1500); }
+  catch(e) { toast('复制失败，请手动选择'); }
+  ta.remove();
+}
 async function refreshFuncStatus(){
   const st=await api('/api/functional/status');
   if(!$('#func-status-card')) return;
