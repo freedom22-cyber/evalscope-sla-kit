@@ -867,8 +867,7 @@ def api_acc_set_config(payload: dict = Body(...)):
 def api_acc_run(payload: dict = Body(default={})):
     if _ACC_TASK.get("status") == "running":
         return JSONResponse({"ok": False, "error": "精度测试正在运行中"}, status_code=409)
-    cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"), "--config", CONFIG_PATH]
-    # 用户直接选数据集 -> 动态构建组行写入临时 override
+    # 用户直接选数据集 -> 动态构建组行写入 override
     datasets = payload.get("datasets")
     if datasets and isinstance(datasets, list) and len(datasets) > 0:
         st = load_state()
@@ -881,17 +880,32 @@ def api_acc_run(payload: dict = Body(default={})):
         line = f"{tag}, {' '.join(datasets)}, {rounds}, {effort}, {max_tokens}, {batch}, {k}"
         st["accuracy_override"] = {"datasets": [line]}
         save_state(st)
-    else:
-        k = payload.get("k")
-        if k:
-            cmd += ["--k", str(int(k))]
-        only = payload.get("only")
-        if only:
-            cmd += ["--only", only]
+    # 把 effective_config（含 override）写成临时 YAML，确保 accuracy_runner 读到的是
+    # 页面配置而非 config.yaml 原值
+    cfg, _ = effective_config()
+    import tempfile, yaml as _yaml
+    tmp_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False,
+                                          dir=KIT_ROOT, encoding="utf-8")
+    _yaml.dump(cfg, tmp_cfg, allow_unicode=True, default_flow_style=False)
+    tmp_cfg.close()
+    cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"),
+           "--config", tmp_cfg.name]
+    k = payload.get("k")
+    if k and not datasets:
+        cmd += ["--k", str(int(k))]
+    only = payload.get("only")
+    if only:
+        cmd += ["--only", only]
     limit = payload.get("limit")
     if limit:
         cmd += ["--limit", str(int(limit))]
+    # 临时配置文件用完删除（在 _run_generic 结束后）
+    def _cleanup():
+        try: os.unlink(tmp_cfg.name)
+        except OSError: pass
     threading.Thread(target=_run_generic, args=("acc", _ACC_TASK, cmd, "acc"), daemon=True).start()
+    # 延迟清理：给 _run_generic 足够时间启动
+    threading.Timer(120, _cleanup).start()
     return {"ok": True}
 
 @app.post("/api/accuracy/stop")
