@@ -735,24 +735,92 @@ def api_func_list():
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/functional/cases")
+def api_func_cases():
+    """返回每个功能测试用例的 curl 命令，供前端复制手动执行。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("run_api_e2e",
+        os.path.join(KIT_ROOT, "scripts", "run_api_e2e.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    cfg, _ = effective_config()
+    svc = cfg.get("service", {})
+    req = cfg.get("request", {})
+    # 构建 Config 对象
+    raw_base = svc.get("url", "")
+    base_url = mod.normalize_base_url(mod.base_url_of(raw_base))
+    api_key = req.get("api_key", "") or ""
+    headers = mod.headers_from_kit_config(cfg)
+    if req.get("add_host_header"):
+        host = req.get("host_header") or ""
+        if not host:
+            from urllib.parse import urlsplit
+            host = urlsplit(raw_base).hostname or ""
+        if host:
+            headers["Host"] = host
+    for item in req.get("extra_headers") or []:
+        if "=" in str(item):
+            k, _, v = str(item).partition("=")
+        else:
+            k, _, v = str(item).partition(":")
+        if k.strip():
+            headers[k.strip()] = v.strip()
+
+    config = mod.Config(
+        base_url=base_url, api_key=api_key, model=svc.get("model", ""),
+        interface_types=["openai"], openai_api_version="v1",
+        messages_api_version="v1", gemini_api_version="v1beta",
+        embedding_api_version="v1", gemini_interactions_api_revision="2025-04-21",
+        headers=headers, timeout_seconds=300,
+        report_path=None, print_logs=False, log_max_chars=12000, verify_ssl=True,
+        skip_long_context_api=True, long_context_api_tokens=8192,
+    )
+    cases = mod.build_cases(config)
+    out = []
+    for c in cases:
+        url = mod.endpoint_url(base_url, c.endpoint)
+        hdrs = mod.request_headers(config, c.extra_headers)
+        parts = ["curl -sS"]
+        if c.method != "GET":
+            parts += ["-X", c.method]
+        for k, v in hdrs.items():
+            parts += ["-H", f'"{k}: {v}"']
+        if c.payload is not None:
+            body = mod.compact_json(c.payload)
+            parts += ["-d", "'" + body.replace("'", "'\\''") + "'"]
+        parts.append(f'"{url}"')
+        curl = " ".join(parts)
+        out.append({
+            "category": c.category, "name": c.name,
+            "tags": c.tags, "endpoint": c.endpoint,
+            "method": c.method, "stream": c.stream,
+            "curl": curl,
+        })
+    return {"ok": True, "cases": out}
+
+
 @app.get("/api/accuracy/status")
 def api_acc_status():
     return dict(_ACC_TASK) if _ACC_TASK else {"status": "not_started"}
 
 @app.get("/api/accuracy/config")
 def api_acc_config():
-    """读精度数据集组配置：web_state accuracy_override 优先，否则 config.yaml accuracy 段。"""
+    """读精度数据集组配置 + 可用数据集列表。"""
     cfg, st = effective_config()
     acc = cfg.get("accuracy") or {}
     groups = []
+    all_datasets = set()
     for line in acc.get("datasets") or []:
         try:
             g = _parse_acc_group(line)
             g["enabled"] = True
             groups.append(g)
+            all_datasets.update(g["datasets"])
         except Exception:
             continue
     return {"ok": True, "groups": groups,
+            "available_datasets": sorted(all_datasets),
             "proxy": acc.get("proxy", ""),
             "evalscope_bin": acc.get("evalscope_bin", "evalscope"),
             "from_override": bool(st.get("accuracy_override"))}
@@ -800,12 +868,26 @@ def api_acc_run(payload: dict = Body(default={})):
     if _ACC_TASK.get("status") == "running":
         return JSONResponse({"ok": False, "error": "精度测试正在运行中"}, status_code=409)
     cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"), "--config", CONFIG_PATH]
-    k = payload.get("k")
-    if k:
-        cmd += ["--k", str(int(k))]
-    only = payload.get("only")
-    if only:
-        cmd += ["--only", only]
+    # 用户直接选数据集 -> 动态构建组行写入临时 override
+    datasets = payload.get("datasets")
+    if datasets and isinstance(datasets, list) and len(datasets) > 0:
+        st = load_state()
+        k = payload.get("k") or 4
+        rounds = payload.get("rounds") or 1
+        effort = payload.get("effort") or "max"
+        max_tokens = payload.get("max_tokens") or 131072
+        batch = payload.get("batch_size") or 32
+        tag = "web_" + "_".join(datasets)
+        line = f"{tag}, {' '.join(datasets)}, {rounds}, {effort}, {max_tokens}, {batch}, {k}"
+        st["accuracy_override"] = {"datasets": [line]}
+        save_state(st)
+    else:
+        k = payload.get("k")
+        if k:
+            cmd += ["--k", str(int(k))]
+        only = payload.get("only")
+        if only:
+            cmd += ["--only", only]
     limit = payload.get("limit")
     if limit:
         cmd += ["--limit", str(int(limit))]

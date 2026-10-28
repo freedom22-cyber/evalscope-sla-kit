@@ -923,10 +923,52 @@ async function renderFunctional(){
   bar.append(el('span',{cls:'spacer'}));
   bar.append(btn('刷新','refresh','small',renderFunctional));
   m.append(bar);
+  /* 用例列表 + curl */
+  m.append(el('div',{id:'func-cases-card'}));
   m.append(el('div',{id:'func-status-card'}));
   m.append(el('div',{id:'func-report-card'}));
+  await renderFuncCases();
   await refreshFuncStatus();
 }
+async function renderFuncCases(){
+  const card=$('#func-cases-card'); if(!card) return;
+  card.innerHTML='';
+  const r=await api('/api/functional/cases');
+  if(!r.ok){ card.append(el('div',{cls:'card'}, el('div',{cls:'muted'},'用例加载失败: '+(r.error||'')))); return; }
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('list'), el('span',{},'用例清单'),
+    el('span',{cls:'hint'}, (r.cases||[]).length+' 条 · 点击复制 curl 手动执行')));
+  const wrap=el('div',{style:'overflow:auto;max-height:420px'});
+  const tb=el('table');
+  tb.innerHTML='<thead><tr><th>分类</th><th>用例</th><th>方法</th><th>端点</th><th>curl</th></tr></thead>';
+  const tbody=el('tbody');
+  (r.cases||[]).forEach((cs,i)=>{
+    const tr=el('tr');
+    tr.innerHTML=
+      '<td>'+esc(cs.category)+'</td>'
+      +'<td>'+esc(cs.name)+(cs.stream?' <span class="pill running" style="font-size:9px">stream</span>':'')+'</td>'
+      +'<td class="mono">'+esc(cs.method||'POST')+'</td>'
+      +'<td><code>'+esc(cs.endpoint)+'</code></td>'
+      +'<td><button class="small" data-curl="'+i+'">复制 curl</button></td>';
+    tbody.append(tr);
+  });
+  tb.append(tbody); wrap.append(tb); c.append(wrap);
+  // 存 curl 数据供复制
+  c._curls=(r.cases||[]).map(cs=>cs.curl);
+  card.append(c);
+}
+document.addEventListener('click', e=>{
+  const b=e.target.closest&&e.target.closest('[data-curl]');
+  if(b){
+    const card=b.closest('.card');
+    const curls=card&&card._curls;
+    const idx=+b.dataset.curl;
+    if(curls&&curls[idx]){
+      navigator.clipboard.writeText(curls[idx]).then(()=>{ toast('curl 已复制到剪贴板'); b.textContent='已复制'; setTimeout(()=>b.textContent='复制 curl',1500); })
+        .catch(()=>{ toast('复制失败，请手动选择'); });
+    }
+  }
+});
 async function refreshFuncStatus(){
   const st=await api('/api/functional/status');
   if(!$('#func-status-card')) return;
@@ -960,14 +1002,14 @@ async function viewFuncList(){
 }
 
 /* ============================ 精度测试 ============================ */
-let ACC_GROUPS = [];   // 编辑中的数据集组
+let ACC_AVAILABLE_DS = [];
 
 async function renderAccuracy(){
   const m=$('#main'); m.innerHTML='';
   m.append(el('div',{cls:'page-head'}, el('h1',{},'精度测试'),
-    el('div',{cls:'sub'},'用 evalscope 跑精度数据集（gpqa/aime/gsm8k/mmlu 等），输出 pass@k 汇总；可在下方设置数据集组与运行参数')));
+    el('div',{cls:'sub'},'用 evalscope 跑精度数据集（gpqa/aime/gsm8k/mmlu 等），输出 pass@k 汇总；勾选要跑的数据集，设置参数后运行')));
   const bar=el('div',{cls:'toolbar'});
-  const runBtn=btn('运行精度测试','play','primary',runAccuracy); runBtn.id='acc-run-btn';
+  const runBtn=btn('运行精度测试','play','primary',()=>runAccuracy(false)); runBtn.id='acc-run-btn';
   bar.append(runBtn);
   const stopBtn=btn('停止','stop','danger',stopAccuracy); stopBtn.id='acc-stop-btn'; stopBtn.disabled=true;
   bar.append(stopBtn);
@@ -975,7 +1017,7 @@ async function renderAccuracy(){
   bar.append(btn('刷新','refresh','small',renderAccuracy));
   m.append(bar);
 
-  /* 数据集组配置卡 */
+  /* 数据集选择卡 */
   const cfgCard=el('div',{cls:'card',id:'acc-cfg-card'});
   m.append(cfgCard);
   await renderAccConfig();
@@ -983,14 +1025,17 @@ async function renderAccuracy(){
   /* 运行参数卡 */
   const runCard=el('div',{cls:'card'});
   runCard.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行参数'),
-    el('span',{cls:'hint'}, '留空使用数据集组自身配置')));
+    el('span',{cls:'hint'}, '留空使用默认值')));
   const rg=el('div',{cls:'grid3'});
   rg.append(field('样本上限 (--limit)','acc_limit','','冒烟用，每组只评 N 条；留空=全量','number'));
-  rg.append(field('pass@k 覆盖 (--k)','acc_k','','留空=用组内 k；填 4 即 --repeats 4','number'));
-  rg.append(field('只跑指定 tag (--only)','acc_only','','逗号分隔，如 all5；留空=全部启用组'));
+  rg.append(field('pass@k (--k)','acc_k','4','pass@k 采样次数，默认 4','number'));
+  rg.append(field('轮数','acc_rounds','1','重复轮数，默认 1','number'));
+  rg.append(field('effort','acc_effort','max','推理努力度','text'));
+  rg.append(field('max_tokens','acc_max_tokens','131072','','number'));
+  rg.append(field('batch_size','acc_batch_size','32','','number'));
   runCard.append(rg);
   runCard.append(el('div',{cls:'row-actions'},
-    btn('用这些参数运行','play','primary',()=>runAccuracy(true))));
+    btn('用选中数据集和参数运行','play','primary',()=>runAccuracy(true))));
   m.append(runCard);
 
   m.append(el('div',{id:'acc-status-card'}));
@@ -1002,90 +1047,26 @@ async function renderAccConfig(){
   const card=$('#acc-cfg-card'); if(!card) return;
   card.innerHTML='';
   const r=await api('/api/accuracy/config');
-  ACC_GROUPS = (r.groups||[]).map(g=>({...g}));
-  card.append(el('h2',{}, iconEl('target'), el('span',{},'数据集组'),
-    el('span',{cls:'hint'}, (r.from_override?'来自页面配置':'来自 config.yaml')+' · '+ACC_GROUPS.length+' 组')));
-  if(!ACC_GROUPS.length){
-    card.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon('target')}), el('div',{},'暂无数据集组，点下方「添加数据集组」')));
-  }else{
-    const wrap=el('div',{style:'overflow:auto'});
-    const tb=el('table');
-    tb.innerHTML='<thead><tr><th>tag</th><th>数据集（空格分隔）</th><th>轮数</th><th>effort</th>'
-      +'<th>max_tokens</th><th>batch</th><th>k</th><th>操作</th></tr></thead>';
-    const tbody=el('tbody');
-    ACC_GROUPS.forEach((g,i)=>{
-      const tr=el('tr'); tr.dataset.gi=i;
-      tr.innerHTML=
-        '<td><input class="gi" data-f="tag" value="'+esc(g.tag||'')+'" style="width:90px"></td>'
-        +'<td><input class="gi" data-f="datasets" value="'+esc((g.datasets||[]).join(' '))+'" style="width:220px"></td>'
-        +'<td><input class="gi" data-f="rounds" type="number" value="'+(g.rounds||1)+'" style="width:60px"></td>'
-        +'<td><input class="gi" data-f="effort" value="'+esc(g.effort||'max')+'" style="width:70px"></td>'
-        +'<td><input class="gi" data-f="max_tokens" type="number" value="'+(g.max_tokens||131072)+'" style="width:90px"></td>'
-        +'<td><input class="gi" data-f="batch_size" type="number" value="'+(g.batch_size||32)+'" style="width:60px"></td>'
-        +'<td><input class="gi" data-f="k" type="number" value="'+(g.k||1)+'" style="width:50px"></td>'
-        +'<td><button class="small danger" data-accdel="'+i+'">删除</button></td>';
-      tbody.append(tr);
-    });
-    tb.append(tbody); wrap.append(tb); card.append(wrap);
-  }
+  ACC_AVAILABLE_DS = r.available_datasets||[];
+  const allDs = (r.groups||[]).flatMap(g=>g.datasets);
+  const uniqueDs = [...new Set(allDs)];
+  card.append(el('h2',{}, iconEl('target'), el('span',{},'选择数据集'),
+    el('span',{cls:'hint'}, uniqueDs.length+' 个可用')));
+  const grid=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px'});
+  uniqueDs.forEach(ds=>{
+    const row=el('label',{style:'display:flex;gap:9px;align-items:center;padding:8px 12px;cursor:pointer;border:1px solid var(--glass-line);border-radius:10px;transition:background .15s'});
+    row.innerHTML='<input type="checkbox" value="'+esc(ds)+'" checked class="acc-ds-chk" style="accent-color:var(--accent)"><span class="mono" style="font-size:12.5px">'+esc(ds)+'</span>';
+    row.addEventListener('mouseenter',()=>row.style.background='rgba(255,255,255,.04)');
+    row.addEventListener('mouseleave',()=>row.style.background='');
+    grid.append(row);
+  });
+  card.append(grid);
   const ops=el('div',{cls:'row-actions'});
-  ops.append(btn('添加数据集组','plus','',addAccGroup));
-  ops.append(btn('保存数据集组','save','primary',saveAccConfig));
+  ops.append(btn('全选','check','small',()=>$$('.acc-ds-chk').forEach(x=>x.checked=true)));
+  ops.append(btn('全不选','refresh','small',()=>$$('.acc-ds-chk').forEach(x=>x.checked=false)));
   card.append(ops);
 }
-function collectAccGroups(){
-  const rows=$$('#acc-cfg-card tbody tr[data-gi]');
-  return rows.map(tr=>{
-    const o={};
-    $$('input.gi',tr).forEach(inp=>{
-      const f=inp.dataset.f;
-      o[f] = f==='datasets' ? inp.value.trim().split(/\s+/).filter(Boolean) : inp.value;
-    });
-    ['rounds','max_tokens','batch_size','k'].forEach(f=>o[f]=+o[f]||undefined);
-    return o;
-  }).filter(g=>g.tag && g.datasets && g.datasets.length);
-}
-async function addAccGroup(){
-  ACC_GROUPS=collectAccGroups();
-  ACC_GROUPS.push({tag:'',datasets:[],rounds:1,effort:'max',max_tokens:131072,batch_size:32,k:1});
-  redrawRows($('#acc-cfg-card'));
-}
-async function delAccGroup(i){
-  ACC_GROUPS=collectAccGroups();
-  ACC_GROUPS.splice(i,1);
-  redrawRows($('#acc-cfg-card'));
-}
-function redrawRows(card){
-  if(!card) return;
-  const old=card.querySelector('table'); if(!old) return;
-  const wrap=old.parentElement;
-  wrap.innerHTML='';
-  const tb=el('table');
-  tb.innerHTML='<thead><tr><th>tag</th><th>数据集（空格分隔）</th><th>轮数</th><th>effort</th>'
-    +'<th>max_tokens</th><th>batch</th><th>k</th><th>操作</th></tr></thead>';
-  const tbody=el('tbody');
-  ACC_GROUPS.forEach((g,i)=>{
-    const tr=el('tr'); tr.dataset.gi=i;
-    tr.innerHTML=
-      '<td><input class="gi" data-f="tag" value="'+esc(g.tag||'')+'" style="width:90px"></td>'
-      +'<td><input class="gi" data-f="datasets" value="'+esc((g.datasets||[]).join(' '))+'" style="width:220px"></td>'
-      +'<td><input class="gi" data-f="rounds" type="number" value="'+(g.rounds||1)+'" style="width:60px"></td>'
-      +'<td><input class="gi" data-f="effort" value="'+esc(g.effort||'max')+'" style="width:70px"></td>'
-      +'<td><input class="gi" data-f="max_tokens" type="number" value="'+(g.max_tokens||131072)+'" style="width:90px"></td>'
-      +'<td><input class="gi" data-f="batch_size" type="number" value="'+(g.batch_size||32)+'" style="width:60px"></td>'
-      +'<td><input class="gi" data-f="k" type="number" value="'+(g.k||1)+'" style="width:50px"></td>'
-      +'<td><button class="small danger" data-accdel="'+i+'">删除</button></td>';
-    tbody.append(tr);
-  });
-  tb.append(tbody); wrap.append(tb);
-}
-async function saveAccConfig(){
-  const groups=collectAccGroups();
-  if(!groups.length){ toast('至少保留一个有效数据集组'); return; }
-  const r=await api('/api/accuracy/config',{method:'POST',body:JSON.stringify({groups})});
-  toast(r.ok?('已保存 '+r.count+' 个数据集组'):('保存失败: '+(r.error||'')));
-  if(r.ok) await renderAccConfig();
-}
+
 async function refreshAccStatus(){
   const st=await api('/api/accuracy/status');
   if(!$('#acc-status-card')) return;
@@ -1098,31 +1079,29 @@ async function refreshAccStatus(){
 }
 async function loadAccReport(){
   const r=await api('/api/accuracy/report');
-  reportCard('acc-report-card', r, 'target', '暂无精度结果，点上方「运行精度测试」开始');
+  reportCard('acc-report-card', r, 'target', '暂无精度结果，勾选数据集后点运行');
 }
 async function runAccuracy(withParams){
-  let body={};
+  const selected=$$('.acc-ds-chk:checked').map(x=>x.value);
+  if(!selected.length){ toast('请至少勾选一个数据集'); return; }
+  let body={datasets:selected};
   if(withParams){
-    const lim=$('#cfg-acc_limit').value, k=$('#cfg-acc_k').value, only=$('#cfg-acc_only').value.trim();
+    const lim=$('#cfg-acc_limit').value;
     if(lim) body.limit=+lim;
-    if(k) body.k=+k;
-    if(only) body.only=only;
+    body.k=+$('#cfg-acc_k').value||4;
+    body.rounds=+$('#cfg-acc_rounds').value||1;
+    body.effort=$('#cfg-acc_effort').value||'max';
+    body.max_tokens=+$('#cfg-acc_max_tokens').value||131072;
+    body.batch_size=+$('#cfg-acc_batch_size').value||32;
   }
   const r=await api('/api/accuracy/run',{method:'POST',body:JSON.stringify(body)});
-  if(r.ok) toast('精度测试已启动'); else toast('启动失败: '+(r.error||''));
+  if(r.ok) toast('精度测试已启动 ('+selected.join(', ')+')'); else toast('启动失败: '+(r.error||''));
   await refreshAccStatus();
 }
 async function stopAccuracy(){
   const r=await api('/api/accuracy/stop',{method:'POST',body:'{}'});
   toast(r.ok?'已停止精度测试':('停止失败: '+(r.error||'')));
   await refreshAccStatus();
-}
-async function viewAccList(){
-  const r=await api('/api/accuracy/list');
-  $('#dlg-title').textContent='精度数据集组';
-  $('#dlg-body').innerHTML='';
-  $('#dlg-body').append(el('pre',{cls:'log'},(r.lines||['(空)']).join('\n')));
-  $('#dlg').showModal();
 }
 
 /* ============================ 导航 ============================ */
