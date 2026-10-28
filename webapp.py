@@ -22,6 +22,7 @@ import glob
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -54,6 +55,8 @@ _RUN_QUEUE = []      # [(project_id, case_id)]
 _RUN_THREAD = None
 _STOP_FLAG = threading.Event()
 _GEN_TASKS = {}      # case_id -> {status: idle|generating|done|error, error: str}
+_CASE_PROC = None    # 当前正在跑的性能用例子进程 (Popen, 独立进程组)
+_CASE_STOP = threading.Event()   # 请求停止当前用例
 
 
 # ---------------------------------------------------------------- state ----
@@ -239,17 +242,23 @@ def _run_case(project_id, case_id, cfg, st):
             cmd = runner.build_evalscope_cmd(cfg, c, dataset_path)
             log(f"[{case_id}] 命令: " + " ".join(cmd))
             log(f"[{case_id}] 开始 {_now()}")
-            r = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT)
-            if _STOP_FLAG.is_set():
+            global _CASE_PROC
+            _CASE_STOP.clear()
+            # start_new_session: 独立进程组, stop 时 killpg 一次杀干净 (evalscope 还会派生 worker)
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+            _CASE_PROC = proc
+            r = proc.wait()
+            _CASE_PROC = None
+            if _CASE_STOP.is_set() or _STOP_FLAG.is_set():
                 _set_task(key, status="stopped", finished=_now())
                 log(f"[{case_id}] 已手动停止")
-            elif r.returncode == 0:
+            elif r == 0:
                 res = _result_of(case_id)
                 _set_task(key, status="done", finished=_now(), summary_path=res["summary_path"])
                 log(f"[{case_id}] 完成 {_now()}")
             else:
-                _set_task(key, status="error", finished=_now(), error=f"exit code {r.returncode}")
-                log(f"[{case_id}] 失败 exit={r.returncode}")
+                _set_task(key, status="error", finished=_now(), error=f"exit code {r}")
+                log(f"[{case_id}] 失败 exit={r}")
         except Exception as e:
             _set_task(key, status="error", finished=_now(), error=str(e))
             log(f"[{case_id}] 异常: {e}")
@@ -285,6 +294,7 @@ def enqueue_runs(items):
             if _TASKS[key].get("status") != "running":
                 _TASKS[key]["status"] = "pending"
         _STOP_FLAG.clear()
+        _CASE_STOP.clear()
         if _RUN_THREAD is None or not _RUN_THREAD.is_alive():
             _RUN_THREAD = threading.Thread(target=_run_worker, daemon=True)
             _RUN_THREAD.start()
@@ -556,7 +566,12 @@ def api_project_run(pid: str, payload: dict = Body(default={})):
 
 @app.post("/api/projects/{pid}/stop")
 def api_project_stop(pid: str):
+    global _CASE_PROC
     _STOP_FLAG.set()
+    _CASE_STOP.set()
+    # 真正杀当前正在跑的用例子进程树（evalscope 及其 worker）
+    _kill_tree(_CASE_PROC)
+    _CASE_PROC = None
     with STATE_LOCK:
         _RUN_QUEUE[:] = [it for it in _RUN_QUEUE if it[0] != pid]
     st = load_state()
@@ -594,27 +609,55 @@ _ACC_TASK = {}
 _FUNC_PROC = None   # subprocess.Popen
 _ACC_PROC = None
 
+
+def _kill_tree(proc):
+    """杀整棵进程树。子进程用 start_new_session 起在独立进程组，killpg 一次清干净。"""
+    if proc is None:
+        return False
+    try:
+        if proc.poll() is not None:
+            return False   # 已退出
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+        proc.wait(timeout=5)
+        return True
+    except (ProcessLookupError, PermissionError):
+        # 进程组已不在：兜底杀主进程
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
-    """通用后台执行：功能/精度测试共用。存 Popen 供 stop 终止。"""
+    """通用后台执行：功能/精度测试共用。start_new_session 起独立进程组供 stop 整组杀。"""
     global _FUNC_PROC, _ACC_PROC
     log_path = os.path.join(LOGS_DIR, f"{log_prefix}_{time.strftime('%Y%m%d_%H%M%S')}.log")
     task_dict.update(status="running", started=_now(), finished=None, error=None, log_path=log_path)
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
         try:
             logf.write(f"[{log_prefix}] 命令: {' '.join(cmd)}\n")
-            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=KIT_ROOT)
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                                    cwd=KIT_ROOT, start_new_session=True)
             task_dict["pid"] = proc.pid
             if log_prefix == "func":
                 _FUNC_PROC = proc
             else:
                 _ACC_PROC = proc
             r = proc.wait()
-            if r == 0:
+            if task_dict.get("status") == "stopped":
+                pass   # 已被 stop 标记，不覆盖
+            elif r == 0:
                 task_dict.update(status="done", finished=_now())
             else:
                 task_dict.update(status="error", finished=_now(), error=f"exit code {r}")
         except Exception as e:
-            task_dict.update(status="error", finished=_now(), error=str(e))
+            if task_dict.get("status") != "stopped":
+                task_dict.update(status="error", finished=_now(), error=str(e))
 
 def _build_service_cmd(script, extra_args=None):
     """构建功能/精度测试命令，从 effective_config 取 url/model/api_key。"""
@@ -662,11 +705,12 @@ def api_func_run(payload: dict = Body(default={})):
 @app.post("/api/functional/stop")
 def api_func_stop():
     global _FUNC_PROC
-    if _FUNC_PROC and _FUNC_PROC.poll() is None:
-        _FUNC_PROC.kill()
-        _FUNC_TASK.update(status="stopped", finished=_now())
-        return {"ok": True}
-    return JSONResponse({"ok": False, "error": "功能测试未在运行"}, status_code=409)
+    if _FUNC_TASK.get("status") != "running":
+        return JSONResponse({"ok": False, "error": "功能测试未在运行"}, status_code=409)
+    killed = _kill_tree(_FUNC_PROC)
+    _FUNC_TASK.update(status="stopped", finished=_now())
+    _FUNC_PROC = None
+    return {"ok": True, "killed": killed}
 
 @app.get("/api/functional/report")
 def api_func_report():
@@ -771,11 +815,12 @@ def api_acc_run(payload: dict = Body(default={})):
 @app.post("/api/accuracy/stop")
 def api_acc_stop():
     global _ACC_PROC
-    if _ACC_PROC and _ACC_PROC.poll() is None:
-        _ACC_PROC.kill()
-        _ACC_TASK.update(status="stopped", finished=_now())
-        return {"ok": True}
-    return JSONResponse({"ok": False, "error": "精度测试未在运行"}, status_code=409)
+    if _ACC_TASK.get("status") != "running":
+        return JSONResponse({"ok": False, "error": "精度测试未在运行"}, status_code=409)
+    killed = _kill_tree(_ACC_PROC)
+    _ACC_TASK.update(status="stopped", finished=_now())
+    _ACC_PROC = None
+    return {"ok": True, "killed": killed}
 
 @app.get("/api/accuracy/report")
 def api_acc_report():
