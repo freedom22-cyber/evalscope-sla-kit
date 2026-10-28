@@ -915,7 +915,10 @@ async function renderFunctional(){
   m.append(el('div',{cls:'page-head'}, el('h1',{},'功能测试'),
     el('div',{cls:'sub'},'对被测服务做 API 端到端功能检查（OpenAI 兼容性/流式/结构化输出/多轮/工具调用等），判定 PASS / WARN / FAIL / SKIP')));
   const bar=el('div',{cls:'toolbar'});
-  bar.append(btn('运行功能测试','play','primary',runFunctional));
+  const runBtn=btn('运行功能测试','play','primary',runFunctional); runBtn.id='func-run-btn';
+  bar.append(runBtn);
+  const stopBtn=btn('停止','stop','danger',stopFunctional); stopBtn.id='func-stop-btn'; stopBtn.disabled=true;
+  bar.append(stopBtn);
   bar.append(btn('查看用例清单','list','',viewFuncList));
   bar.append(el('span',{cls:'spacer'}));
   bar.append(btn('刷新','refresh','small',renderFunctional));
@@ -928,6 +931,8 @@ async function refreshFuncStatus(){
   const st=await api('/api/functional/status');
   if(!$('#func-status-card')) return;
   const running=st.status==='running';
+  const rb=$('#func-run-btn'), sb=$('#func-stop-btn');
+  if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
   statusCard('func-status-card', st, running);
   if(running){ setTimeout(async()=>{ await refreshFuncStatus(); await loadFuncReport(); },4000); }
   else { await loadFuncReport(); }
@@ -939,6 +944,11 @@ async function loadFuncReport(){
 async function runFunctional(){
   const r=await api('/api/functional/run',{method:'POST',body:'{}'});
   if(r.ok) toast('功能测试已启动'); else toast('启动失败: '+(r.error||''));
+  await refreshFuncStatus();
+}
+async function stopFunctional(){
+  const r=await api('/api/functional/stop',{method:'POST',body:'{}'});
+  toast(r.ok?'已停止功能测试':('停止失败: '+(r.error||'')));
   await refreshFuncStatus();
 }
 async function viewFuncList(){
@@ -959,6 +969,8 @@ async function renderAccuracy(){
   const bar=el('div',{cls:'toolbar'});
   const runBtn=btn('运行精度测试','play','primary',runAccuracy); runBtn.id='acc-run-btn';
   bar.append(runBtn);
+  const stopBtn=btn('停止','stop','danger',stopAccuracy); stopBtn.id='acc-stop-btn'; stopBtn.disabled=true;
+  bar.append(stopBtn);
   bar.append(el('span',{cls:'spacer'}));
   bar.append(btn('刷新','refresh','small',renderAccuracy));
   m.append(bar);
@@ -1078,7 +1090,8 @@ async function refreshAccStatus(){
   const st=await api('/api/accuracy/status');
   if(!$('#acc-status-card')) return;
   const running=st.status==='running';
-  const rb=$('#acc-run-btn'); if(rb) rb.disabled=running;
+  const rb=$('#acc-run-btn'), sb=$('#acc-stop-btn');
+  if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
   statusCard('acc-status-card', st, running);
   if(running){ setTimeout(async()=>{ await refreshAccStatus(); await loadAccReport(); },6000); }
   else { await loadAccReport(); }
@@ -1097,6 +1110,11 @@ async function runAccuracy(withParams){
   }
   const r=await api('/api/accuracy/run',{method:'POST',body:JSON.stringify(body)});
   if(r.ok) toast('精度测试已启动'); else toast('启动失败: '+(r.error||''));
+  await refreshAccStatus();
+}
+async function stopAccuracy(){
+  const r=await api('/api/accuracy/stop',{method:'POST',body:'{}'});
+  toast(r.ok?'已停止精度测试':('停止失败: '+(r.error||'')));
   await refreshAccStatus();
 }
 async function viewAccList(){

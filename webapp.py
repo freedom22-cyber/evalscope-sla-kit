@@ -589,21 +589,30 @@ def api_log(path: str, offset: int = 0, tail: int = 0):
 
 
 # ----------------------------------------------------- 功能/精度测试 -------
-_FUNC_TASK = {}   # {status, started, finished, log_path, error, report_path}
+_FUNC_TASK = {}   # {status, started, finished, log_path, error, report_path, pid}
 _ACC_TASK = {}
+_FUNC_PROC = None   # subprocess.Popen
+_ACC_PROC = None
 
 def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
-    """通用后台执行：功能/精度测试共用。"""
+    """通用后台执行：功能/精度测试共用。存 Popen 供 stop 终止。"""
+    global _FUNC_PROC, _ACC_PROC
     log_path = os.path.join(LOGS_DIR, f"{log_prefix}_{time.strftime('%Y%m%d_%H%M%S')}.log")
     task_dict.update(status="running", started=_now(), finished=None, error=None, log_path=log_path)
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
         try:
             logf.write(f"[{log_prefix}] 命令: {' '.join(cmd)}\n")
-            r = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=KIT_ROOT)
-            if r.returncode == 0:
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, cwd=KIT_ROOT)
+            task_dict["pid"] = proc.pid
+            if log_prefix == "func":
+                _FUNC_PROC = proc
+            else:
+                _ACC_PROC = proc
+            r = proc.wait()
+            if r == 0:
                 task_dict.update(status="done", finished=_now())
             else:
-                task_dict.update(status="error", finished=_now(), error=f"exit code {r.returncode}")
+                task_dict.update(status="error", finished=_now(), error=f"exit code {r}")
         except Exception as e:
             task_dict.update(status="error", finished=_now(), error=str(e))
 
@@ -649,6 +658,15 @@ def api_func_run(payload: dict = Body(default={})):
     cmd = _build_service_cmd(os.path.join("scripts", "run_api_e2e.py"), extra)
     threading.Thread(target=_run_generic, args=("func", _FUNC_TASK, cmd, "func"), daemon=True).start()
     return {"ok": True}
+
+@app.post("/api/functional/stop")
+def api_func_stop():
+    global _FUNC_PROC
+    if _FUNC_PROC and _FUNC_PROC.poll() is None:
+        _FUNC_PROC.kill()
+        _FUNC_TASK.update(status="stopped", finished=_now())
+        return {"ok": True}
+    return JSONResponse({"ok": False, "error": "功能测试未在运行"}, status_code=409)
 
 @app.get("/api/functional/report")
 def api_func_report():
@@ -749,6 +767,15 @@ def api_acc_run(payload: dict = Body(default={})):
         cmd += ["--limit", str(int(limit))]
     threading.Thread(target=_run_generic, args=("acc", _ACC_TASK, cmd, "acc"), daemon=True).start()
     return {"ok": True}
+
+@app.post("/api/accuracy/stop")
+def api_acc_stop():
+    global _ACC_PROC
+    if _ACC_PROC and _ACC_PROC.poll() is None:
+        _ACC_PROC.kill()
+        _ACC_TASK.update(status="stopped", finished=_now())
+        return {"ok": True}
+    return JSONResponse({"ok": False, "error": "精度测试未在运行"}, status_code=409)
 
 @app.get("/api/accuracy/report")
 def api_acc_report():
