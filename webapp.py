@@ -603,11 +603,13 @@ def api_log(path: str, offset: int = 0, tail: int = 0):
     return {"ok": True, "lines": all_lines[-800:], "total": total}
 
 
-# ----------------------------------------------------- 功能/精度测试 -------
+# ----------------------------------------------------- 功能/精度/AgentX 测试 -------
 _FUNC_TASK = {}   # {status, started, finished, log_path, error, report_path, pid}
 _ACC_TASK = {}
+_AGENTX_TASK = {}
 _FUNC_PROC = None   # subprocess.Popen
 _ACC_PROC = None
+_AGENTX_PROC = None
 
 
 def _kill_tree(proc):
@@ -634,8 +636,8 @@ def _kill_tree(proc):
 
 
 def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
-    """通用后台执行：功能/精度测试共用。start_new_session 起独立进程组供 stop 整组杀。"""
-    global _FUNC_PROC, _ACC_PROC
+    """通用后台执行：功能/精度/AgentX 测试共用。start_new_session 起独立进程组供 stop 整组杀。"""
+    global _FUNC_PROC, _ACC_PROC, _AGENTX_PROC
     log_path = os.path.join(LOGS_DIR, f"{log_prefix}_{time.strftime('%Y%m%d_%H%M%S')}.log")
     task_dict.update(status="running", started=_now(), finished=None, error=None, log_path=log_path)
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
@@ -646,8 +648,10 @@ def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
             task_dict["pid"] = proc.pid
             if log_prefix == "func":
                 _FUNC_PROC = proc
-            else:
+            elif log_prefix == "acc":
                 _ACC_PROC = proc
+            else:
+                _AGENTX_PROC = proc
             r = proc.wait()
             if task_dict.get("status") == "stopped":
                 pass   # 已被 stop 标记，不覆盖
@@ -945,6 +949,95 @@ def api_acc_list():
         return {"ok": True, "lines": (r.stdout or "").splitlines()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ----------------------------------------------------- AgentX 智能体回放 -------
+@app.get("/api/agentx/status")
+def api_agentx_status():
+    return dict(_AGENTX_TASK) if _AGENTX_TASK else {"status": "not_started"}
+
+@app.get("/api/agentx/config")
+def api_agentx_config():
+    """读 AgentX 变体配置（config.yaml agentx.datasets）。"""
+    cfg, st = effective_config()
+    ax = cfg.get("agentx") or {}
+    variants = []
+    for line in ax.get("datasets") or []:
+        line = str(line).strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            variants.append({
+                "tag": parts[0], "dataset": parts[1],
+                "concurrency": int(parts[2]),
+                "tokenizer": parts[3] if len(parts) > 3 else "",
+                "raw": line,
+            })
+        except (ValueError, IndexError):
+            continue
+    return {"ok": True, "variants": variants,
+            "from_override": bool(st.get("agentx_override"))}
+
+@app.post("/api/agentx/run")
+def api_agentx_run(payload: dict = Body(default={})):
+    if _AGENTX_TASK.get("status") == "running":
+        return JSONResponse({"ok": False, "error": "AgentX 测试正在运行中"}, status_code=409)
+    # effective_config 写临时 YAML（与精度测试同模式，保证读到页面配置）
+    cfg, _ = effective_config()
+    import tempfile, yaml as _yaml
+    tmp_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False,
+                                          dir=KIT_ROOT, encoding="utf-8")
+    _yaml.dump(cfg, tmp_cfg, allow_unicode=True, default_flow_style=False)
+    tmp_cfg.close()
+    cmd = ["python3", os.path.join(KIT_ROOT, "agentx_runner.py"), "--config", tmp_cfg.name]
+    only = payload.get("only")
+    if only:
+        cmd += ["--only", only]
+    conc = payload.get("concurrency")
+    if conc:
+        cmd += ["--concurrency", str(int(conc))]
+    def _cleanup():
+        try: os.unlink(tmp_cfg.name)
+        except OSError: pass
+    threading.Thread(target=_run_generic, args=("agentx", _AGENTX_TASK, cmd, "agentx"), daemon=True).start()
+    threading.Timer(120, _cleanup).start()
+    return {"ok": True}
+
+@app.post("/api/agentx/stop")
+def api_agentx_stop():
+    global _AGENTX_PROC
+    if _AGENTX_TASK.get("status") != "running":
+        return JSONResponse({"ok": False, "error": "AgentX 测试未在运行"}, status_code=409)
+    killed = _kill_tree(_AGENTX_PROC)
+    _AGENTX_TASK.update(status="stopped", finished=_now())
+    _AGENTX_PROC = None
+    return {"ok": True, "killed": killed}
+
+@app.get("/api/agentx/report")
+def api_agentx_report():
+    """读最新 AgentX 运行的实时指标（从日志尾部解析 records_manager 指标行）。"""
+    log_path = _AGENTX_TASK.get("log_path")
+    if not log_path or not os.path.exists(log_path):
+        # 找最新的 agentx 日志
+        pats = sorted(glob.glob(os.path.join(LOGS_DIR, "agentx_*.log")))
+        log_path = pats[-1] if pats else None
+    if not log_path or not os.path.exists(log_path):
+        return {"ok": False, "report": None}
+    # 从日志尾部提取最近一次 realtime 指标块
+    metrics = {}
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    block = []
+    for ln in reversed(lines[-500:]):
+        if "realtime" in ln and block:
+            break
+        if any(k in ln for k in ("rps=", "ttft ", "itl ", "e2e ", "isl ", "osl ", "tot ", "trace ", "intvty")):
+            block.append(ln.rstrip())
+    block.reverse()
+    return {"ok": True, "report": "\n".join(block[-12:]), "path": log_path}
 
 
 # ----------------------------------------------------- 日志打包下载 -------

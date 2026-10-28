@@ -18,6 +18,10 @@ echo "== [2/4] 安装 evalscope[perf] + Web 依赖 =="
   || "$PY" -m pip install "evalscope[perf]" -i "$PIP_INDEX" --no-build-isolation
 # Web 前端后端（fastapi + uvicorn）
 "$PY" -m pip install fastapi uvicorn -i "$PIP_INDEX" -q 2>/dev/null || true
+# AgentX 智能体回放（SemiAnalysis agentx-harness; crick 需要 python3-devel+gcc）
+"$PY" -c "import importlib.util; sys.exit(0 if importlib.util.find_spec('aiperf') else 1)" 2>/dev/null \
+  || { echo "  安装 agentx-harness（crick 编译需要 python3-devel gcc）"; \
+       "$PY" -m pip install 'agentx-harness==1.0.7' -i "$PIP_INDEX" 2>&1 | tail -2; }
 
 echo "== [2.5/4] 补丁: custom 数据集插件支持 dataset_offset =="
 # 官方 custom 插件忽略 --dataset-offset（random/multi_turn 插件都支持），多轮摸高换起点时

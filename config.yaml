@@ -162,6 +162,25 @@ accuracy:
     - "all5, gpqa_diamond aime25 aime26 gsm8k mmlu, 1, max, 131072, 32, 4"
 
 # ============================================================================
+# AgentX 智能体工作负载回放（agentx_runner.py, SemiAnalysis AgentX v1.0）
+# ----------------------------------------------------------------------------
+# 用 agentx-harness 回放公开的 Claude Code 会话 trace（393 个真实智能体
+# 编码会话, 含多轮/子智能体/前缀复用/KV cache 命中模式）, 测真实智能体
+# 工作负载下的性能（TTFT/吞吐/缓存命中）, 不是精度。
+# 用法: bash run.sh --agentx           # 后台跑（日志 logs/agentx_*.log）
+#       bash run.sh --agentx -f        # 前台
+#       python3 agentx_runner.py --list / --dry-run / --only 256k
+# 数据集变体（HuggingFace semianalysisai/cc-traces-weka-*）:
+#   full  1M ctx, 135k 请求 | 256k  256k ctx, 68k 请求（推荐, 兼容小上下文）
+# ============================================================================
+agentx:
+  datasets:
+    # "tag, public_dataset, concurrency [, tokenizer]"
+    # tokenizer 留空 = 用 service.tokenizer_path（本地路径）
+    - "256k, semianalysis_cc_traces_weka_with_subagents_256k, 16"
+    # - "full, semianalysis_cc_traces_weka_062126, 16"
+
+# ============================================================================
 # 功能测试（scripts/run_api_e2e.py, Simaas 风格 API E2E 框架）
 # ----------------------------------------------------------------------------
 # 用法: bash run.sh --functional            # 后台跑全部用例（日志 logs/func_*.log）

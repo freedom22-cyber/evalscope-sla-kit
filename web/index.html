@@ -222,6 +222,7 @@
       <a data-view="projects"><span class="ico" data-ic="package"></span><span>测试工程</span><span class="badge" id="badge-projects">-</span></a>
       <a data-view="functional"><span class="ico" data-ic="compass"></span><span>功能测试</span></a>
       <a data-view="accuracy"><span class="ico" data-ic="target"></span><span>精度测试</span></a>
+      <a data-view="agentx"><span class="ico" data-ic="bolt"></span><span>AgentX 回放</span></a>
     </nav>
     <div class="foot">FastAPI · 端口 8300</div>
   </aside>
@@ -1118,9 +1119,117 @@ async function stopAccuracy(){
   await refreshAccStatus();
 }
 
+/* ============================ AgentX 回放 ============================ */
+async function renderAgentX(){
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'AgentX 回放'),
+    el('div',{cls:'sub'},'用 SemiAnalysis AgentX 回放真实 Claude Code 智能体会话 trace（393 会话/多轮/子智能体/前缀复用），测真实智能体工作负载下的 TTFT/ITL/吞吐/缓存命中')));
+  const bar=el('div',{cls:'toolbar'});
+  const runBtn=btn('运行 AgentX','play','primary',()=>runAgentX(false)); runBtn.id='agentx-run-btn';
+  bar.append(runBtn);
+  const stopBtn=btn('停止','stop','danger',stopAgentX); stopBtn.id='agentx-stop-btn'; stopBtn.disabled=true;
+  bar.append(stopBtn);
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','small',renderAgentX));
+  m.append(bar);
+
+  /* 变体选择卡 */
+  const cfgCard=el('div',{cls:'card',id:'agentx-cfg-card'});
+  m.append(cfgCard);
+  await renderAgentXConfig();
+
+  /* 运行参数卡 */
+  const runCard=el('div',{cls:'card'});
+  runCard.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行参数'),
+    el('span',{cls:'hint'}, '留空使用变体默认值')));
+  const rg=el('div',{cls:'grid3'});
+  rg.append(field('并发会话数','agentx_conc','','留空=用变体配置（如 16）','number'));
+  rg.append(field('只跑指定变体','agentx_only','','变体 tag，如 256k；留空=全部'));
+  runCard.append(rg);
+  runCard.append(el('div',{cls:'row-actions'},
+    btn('用这些参数运行','play','primary',()=>runAgentX(true))));
+  m.append(runCard);
+
+  m.append(el('div',{id:'agentx-status-card'}));
+  m.append(el('div',{id:'agentx-report-card'}));
+  await refreshAgentXStatus();
+}
+
+async function renderAgentXConfig(){
+  const card=$('#agentx-cfg-card'); if(!card) return;
+  card.innerHTML='';
+  const r=await api('/api/agentx/config');
+  if(!r.ok){ card.append(el('div',{cls:'muted'},'配置加载失败: '+(r.error||''))); return; }
+  card.append(el('h2',{}, iconEl('bolt'), el('span',{},'回放变体'),
+    el('span',{cls:'hint'}, (r.variants||[]).length+' 个 · 来自 config.yaml agentx 段')));
+  if(!(r.variants||[]).length){
+    card.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon('bolt')}),
+      el('div',{},'config.yaml agentx.datasets 无启用变体')));
+    return;
+  }
+  const wrap=el('div',{style:'overflow:auto'});
+  const tb=el('table');
+  tb.innerHTML='<thead><tr><th>tag</th><th>数据集</th><th>并发</th><th>tokenizer</th></tr></thead>';
+  const tbody=el('tbody');
+  (r.variants||[]).forEach(v=>{
+    const tr=el('tr');
+    tr.innerHTML='<td><code>'+esc(v.tag)+'</code></td>'
+      +'<td class="mono" style="font-size:11px">'+esc(v.dataset)+'</td>'
+      +'<td class="mono">'+v.concurrency+'</td>'
+      +'<td class="muted" style="font-size:11px">'+(v.tokenizer?esc(v.tokenizer):'用 service.tokenizer_path')+'</td>';
+    tbody.append(tr);
+  });
+  tb.append(tbody); wrap.append(tb); card.append(wrap);
+  card.append(el('div',{cls:'hint',style:'margin-top:10px'},
+    '变体在 config.yaml agentx.datasets 配置（"tag, public_dataset, concurrency [, tokenizer]"）；256k 变体兼容 256k 上下文，full 变体需 1M 上下文'));
+}
+
+async function refreshAgentXStatus(){
+  const st=await api('/api/agentx/status');
+  if(!$('#agentx-status-card')) return;
+  const running=st.status==='running';
+  const rb=$('#agentx-run-btn'), sb=$('#agentx-stop-btn');
+  if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
+  statusCard('agentx-status-card', st, running);
+  if(running){ setTimeout(async()=>{ await refreshAgentXStatus(); await loadAgentXReport(); },5000); }
+  else { await loadAgentXReport(); }
+}
+async function loadAgentXReport(){
+  const card=$('#agentx-report-card'); if(!card) return;
+  const r=await api('/api/agentx/report');
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('doc'), el('span',{},'实时指标'),
+    el('span',{cls:'hint'}, '最近一次 realtime 汇总')));
+  if(!r.ok||!r.report){
+    c.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon('bolt')}),
+      el('div',{},'暂无结果，点上方「运行 AgentX」开始')));
+  }else{
+    c.append(el('pre',{cls:'log',style:'max-height:340px'},r.report));
+    c.append(el('div',{cls:'hint',style:'margin-top:8px'}, r.path||''));
+  }
+  card.append(c);
+}
+async function runAgentX(withParams){
+  let body={};
+  if(withParams){
+    const conc=$('#cfg-agentx_conc').value, only=$('#cfg-agentx_only').value.trim();
+    if(conc) body.concurrency=+conc;
+    if(only) body.only=only;
+  }
+  const r=await api('/api/agentx/run',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok) toast('AgentX 已启动'); else toast('启动失败: '+(r.error||''));
+  await refreshAgentXStatus();
+}
+async function stopAgentX(){
+  const r=await api('/api/agentx/stop',{method:'POST',body:'{}'});
+  toast(r.ok?'已停止 AgentX':('停止失败: '+(r.error||'')));
+  await refreshAgentXStatus();
+}
+
 /* ============================ 导航 ============================ */
 const RENDER={ config:renderConfig, cases:renderCases, projects:renderProjects,
-               functional:renderFunctional, accuracy:renderAccuracy };
+               functional:renderFunctional, accuracy:renderAccuracy, agentx:renderAgentX };
 async function go(view){
   VIEW=view;
   if(view!=='projects') CURRENT_PROJECT=null;
