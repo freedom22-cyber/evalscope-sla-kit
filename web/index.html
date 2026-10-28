@@ -495,7 +495,7 @@ async function renderCases(){
       +'<td>'+esc(c.dataset)+'</td>'
       +'<td class="mono">'+kfmt(c.input_len)+'</td>'
       +'<td class="mono">'+kfmt(c.output_len)+'</td>'
-      +'<td>'+hitfmt(c.hit_rate)+'</td>'
+      +'<td>'+hitfmt(c.hit_rate)+(c.prefix_num>1?' <span class="pill running" style="font-size:9px">P'+c.prefix_num+'</span>':'')+'</td>'
       +'<td class="mono">'+c.ttft_sla_ms+' ms</td>'
       +'<td class="mono">'+c.tpot_sla_ms+' ms</td>'
       +'<td>'+dsCell+'</td>'
@@ -530,7 +530,7 @@ async function renderCases(){
     +'<div class="field"><label>输入长度</label><input type="text" id="nc-in" placeholder="如 1k / 64k / 1000k"></div>'
     +'<div class="field"><label>输出长度</label><input type="text" id="nc-out" placeholder="如 1k"></div>'
     +'<div class="field"><label>缓存命中率</label><input type="text" id="nc-hit" placeholder="0 / 0.3 / 0.9"></div>'
-    +'<div class="field"><label>前缀数量</label><input type="number" id="nc-pnum" value="1"></div>'
+    +'<div class="field"><label>前缀数量</label><input type="number" id="nc-pnum" value="1"><span class="hint">前缀种类数；>1 为多前缀场景，数据集文件名带 pN 段自动隔离</span></div>'
     +'<div class="field"><label>数据集条数（gsm8k）</label><input type="number" id="nc-num" placeholder="默认 1000"></div>'
     +'<div class="field"><label>TTFT SLA (ms)</label><input type="number" id="nc-ttft" value="10000"></div>'
     +'<div class="field"><label>TPOT SLA (ms)</label><input type="number" id="nc-tpot" value="50"></div>'}));
@@ -1054,8 +1054,50 @@ async function renderAccuracy(){
   m.append(runCard);
 
   m.append(el('div',{id:'acc-status-card'}));
+  m.append(el('div',{id:'acc-history-card'}));
   m.append(el('div',{id:'acc-report-card'}));
   await refreshAccStatus();
+  await renderAccHistory();
+}
+
+async function renderAccHistory(){
+  const card=$('#acc-history-card'); if(!card) return;
+  card.innerHTML='';
+  const r=await api('/api/accuracy/history');
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('list'), el('span',{},'历史记录'),
+    el('span',{cls:'hint'}, (r.history||[]).length+' 次')));
+  if(!(r.history||[]).length){
+    c.append(el('div',{cls:'muted',style:'padding:8px 0'},'暂无历史记录，跑一次精度测试后自动记录'));
+  }else{
+    const wrap=el('div',{style:'overflow:auto;max-height:300px'});
+    const tb=el('table');
+    tb.innerHTML='<thead><tr><th>时间</th><th>tag</th><th>数据集分数</th><th>状态</th><th>日志</th></tr></thead>';
+    const tbody=el('tbody');
+    (r.history||[]).forEach(h=>{
+      const tr=el('tr');
+      const scoreHtml=Object.entries(h.scores||{}).map(([ds,m])=>{
+        const parts=[ds+':'];
+        if(m.mean!=null) parts.push('mean='+(+m.mean).toFixed(4));
+        Object.keys(m).filter(k=>k.startsWith('pass@')).forEach(k=>{
+          if(m[k]!=null) parts.push(k+'='+(+m[k]).toFixed(4));
+        });
+        return '<div class="mono" style="font-size:11px">'+esc(parts.join(' '))+'</div>';
+      }).join('');
+      tr.innerHTML='<td class="muted">'+esc(h.time||'')+'</td>'
+        +'<td><code>'+esc(h.tag||'')+'</code></td>'
+        +'<td>'+scoreHtml+'</td>'
+        +'<td>'+pill(h.status)+'</td>'
+        +'<td></td>';
+      const op=tr.lastElementChild;
+      if(h.log_path){
+        const b=el('button',{cls:'small'},'查看'); b.onclick=()=>showLog(h.log_path); op.append(b);
+      }
+      tbody.append(tr);
+    });
+    tb.append(tbody); wrap.append(tb); c.append(wrap);
+  }
+  card.append(c);
 }
 
 async function renderAccConfig(){

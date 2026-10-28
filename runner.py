@@ -177,17 +177,23 @@ def dataset_number(cfg: dict, sc: dict) -> int:
 
 
 def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
-    """返回 (jsonl_path, prompts_path)；文件名规则与 gen_dataset_only.py 一致"""
+    """返回 (jsonl_path, prompts_path)；文件名规则与 gen_dataset_only.py 一致。
+
+    prefix_num > 1 时文件名加 pN{prefix_num} 段——不同前缀种类数的数据集
+    天然分文件，不会静默复用错数据（多前缀场景的前缀池不同）。
+    """
     tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
     n = dataset_number(cfg, sc)
     in_len = sc["input_len"]
     hit = sc["hit_rate"]
+    pnum = sc.get("prefix_num") or cfg.get("dataset", {}).get("gsm8k_prefix_num", 1)
+    pnum_s = f"-pN{pnum}" if pnum and int(pnum) > 1 else ""
     if hit == 0:
-        jsonl = os.path.join(DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}.jsonl")
+        jsonl = os.path.join(DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}{pnum_s}.jsonl")
     else:
         rr = hit if hit < 1 else 1
         jsonl = os.path.join(
-            DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}-repeatRate{rr}.jsonl")
+            DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}{pnum_s}-repeatRate{rr}.jsonl")
     prompts = jsonl.rsplit(".", 1)[0] + ".prompts.txt"
     return jsonl, prompts
 

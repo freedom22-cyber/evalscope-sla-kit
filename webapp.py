@@ -659,6 +659,9 @@ def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
                 task_dict.update(status="done", finished=_now())
             else:
                 task_dict.update(status="error", finished=_now(), error=f"exit code {r}")
+            # 精度测试: 运行结束把结果记入历史（web_state accuracy_history）
+            if log_prefix == "acc" and task_dict.get("status") in ("done", "error"):
+                _record_accuracy_history(task_dict)
         except Exception as e:
             if task_dict.get("status") != "stopped":
                 task_dict.update(status="error", finished=_now(), error=str(e))
@@ -955,6 +958,64 @@ def api_acc_list():
 @app.get("/api/agentx/status")
 def api_agentx_status():
     return dict(_AGENTX_TASK) if _AGENTX_TASK else {"status": "not_started"}
+
+
+def _record_accuracy_history(task_dict: dict):
+    """精度运行结束：解析最新 work-dir 的分数，追加到 web_state accuracy_history。"""
+    try:
+        acc_dir = os.path.join(RESULTS_DIR, "accuracy")
+        # 找本次运行更新的 work-dir（started 之后修改的）
+        work_dirs = []
+        for d in glob.glob(os.path.join(acc_dir, "*_r*")):
+            if os.path.getmtime(d) >= time.time() - 60 * 60 * 24:  # 24h 内
+                work_dirs.append(d)
+        if not work_dirs:
+            return
+        work_dir = max(work_dirs, key=os.path.getmtime)
+        tag = os.path.basename(work_dir)
+        # 解析 reports/<model>/<ds>.json 的分数
+        scores = {}
+        for rep in glob.glob(os.path.join(work_dir, "reports", "*", "*.json")):
+            ds = os.path.basename(rep).rsplit(".", 1)[0]
+            try:
+                with open(rep, encoding="utf-8") as f:
+                    data = json.load(f)
+                for m in data.get("metrics", []):
+                    ident = m.get("identity", {})
+                    agg = ident.get("aggregation")
+                    if agg == "mean":
+                        scores.setdefault(ds, {})["mean"] = m.get("score")
+                        scores.setdefault(ds, {})["num"] = m.get("num")
+                    elif agg == "pass_at_k":
+                        k = (ident.get("dimensions") or {}).get("k")
+                        if k is not None:
+                            scores.setdefault(ds, {})[f"pass@{k}"] = m.get("score")
+            except Exception:
+                continue
+        if not scores:
+            return
+        st = load_state()
+        st.setdefault("accuracy_history", []).append({
+            "time": _now(),
+            "tag": tag,
+            "work_dir": work_dir,
+            "log_path": task_dict.get("log_path"),
+            "status": task_dict.get("status"),
+            "scores": scores,
+        })
+        # 封顶 100 条
+        if len(st["accuracy_history"]) > 100:
+            st["accuracy_history"] = st["accuracy_history"][-100:]
+        save_state(st)
+    except Exception:
+        pass  # 历史记录失败不影响主流程
+
+
+@app.get("/api/accuracy/history")
+def api_acc_history():
+    """精度测试历史记录列表。"""
+    st = load_state()
+    return {"ok": True, "history": list(reversed(st.get("accuracy_history") or []))}
 
 @app.get("/api/agentx/config")
 def api_agentx_config():
