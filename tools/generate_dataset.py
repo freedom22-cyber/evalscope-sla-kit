@@ -156,10 +156,13 @@ def create_multi_prefix_dataset(tokenizer_path: str, input_len: int, number: int
 
     # Reuse check: compute expected file paths, skip generation if both exist
     prefix_path = os.path.join(save_path, f'prefix-GSM8K-in{prefix_len}-num{dp*prefix_num}-{base_name}.jsonl')
+    # 多前缀数据集文件名带 -pfxN（与 runner.py gsm8k_dataset_paths 命名一致），
+    # 避免与单前缀数据集互相错误复用
+    pfx_tag = f'-pfx{prefix_num}' if prefix_num > 1 else ''
     if repeat_rate >= 1:
         dataset_path_reuse = os.path.join(save_path, f'GSM8K-in{prefix_len}-num{dp*prefix_num}-{base_name}-repeatRate{repeat_rate}.jsonl')
     else:
-        dataset_path_reuse = os.path.join(save_path, f'GSM8K-in{input_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl')
+        dataset_path_reuse = os.path.join(save_path, f'GSM8K-in{input_len}-num{number}-{base_name}-repeatRate{repeat_rate}{pfx_tag}.jsonl')
     if os.path.exists(prefix_path) and os.path.exists(dataset_path_reuse) and not force_regenerate:
         logging.info("Prefix dataset already exists, skipping generation:")
         logging.info(f"  prefix: {prefix_path}")
@@ -170,8 +173,8 @@ def create_multi_prefix_dataset(tokenizer_path: str, input_len: int, number: int
     prefix_data = create_dataset(tokenizer_path, prefix_len, prefix_num, 1)
     # if repeat_rate == 0:
     #     prefix_data = [""]
-    if prefix_data == None and repeat_rate > 0:
-        logging.error(f"生成数据集失败，请清空picked ids")
+    if not prefix_data and repeat_rate > 0:
+        logging.error(f"生成数据集失败（前缀池耗尽），请清空picked ids")
         exit(0)
 
     prefix_dataset = []
@@ -200,7 +203,7 @@ def create_multi_prefix_dataset(tokenizer_path: str, input_len: int, number: int
         dataset.append(single_data)
         data_len += 1
 
-    dataset_path = os.path.join(save_path, f'GSM8K-in{input_len}-num{number}-{base_name}-repeatRate{repeat_rate}.jsonl')
+    dataset_path = os.path.join(save_path, f'GSM8K-in{input_len}-num{number}-{base_name}-repeatRate{repeat_rate}{pfx_tag}.jsonl')
     write_data(dataset_path, dataset)
 
     return prefix_path, dataset_path

@@ -10,6 +10,10 @@
   python3 gen_dataset_only.py --tokenizer_path /path/to/model --input_len 8192 --number 160 \
       --prefix_flag 1 --repeat_rate 0.9 --prefix_num 1 --seed 0 --dp 1
 
+  # 多前缀缓存数据集（前缀重复率90%，3个前缀轮转挂载，文件名带 -pfx3）
+  python3 gen_dataset_only.py --tokenizer_path /path/to/model --input_len 8192 --number 160 \
+      --prefix_flag 1 --repeat_rate 0.9 --prefix_num 3 --seed 0 --dp 1
+
   # 强制重新生成
   python3 gen_dataset_only.py --tokenizer_path /path/to/model --input_len 8192 --number 160 --force_regenerate
 """

@@ -92,14 +92,23 @@ def parse_scenario(line: str) -> dict:
     if dset not in ("random", "gsm8k"):
         raise ValueError(f"数据集类型必须是 random/gsm8k: {line!r}")
     hit_rate = parse_hit_rate(hit)
-    if dset == "random" and hit_rate != 0:
-        raise ValueError(f"random 数据集不支持缓存命中率: {line!r}")
+    pnum_val = int(pnum)
+    if dset == "random":
+        # random 走 evalscope 原生前缀（--prefix-length/--prefix-count），总输入 = 前缀 + 后缀
+        if hit_rate >= 1:
+            raise ValueError(f"random 数据集缓存命中率需 < 1（后缀长度不能为 0）: {line!r}")
+        if hit_rate == 0 and pnum_val > 1:
+            raise ValueError(f"random 数据集 prefix_num>1 需搭配缓存命中率>0: {line!r}")
+    else:
+        # gsm8k 前缀由数据集文件承载（hit=0 不生成前缀，prefix_num 无效）
+        if hit_rate == 0 and pnum_val > 1:
+            raise ValueError(f"gsm8k 数据集 hit_rate=0 时 prefix_num 必须为 1: {line!r}")
     sc = {
         "dataset": dset,
         "input_len": parse_len(in_len),
         "output_len": parse_len(out_len),
         "hit_rate": hit_rate,
-        "prefix_num": int(pnum),
+        "prefix_num": pnum_val,
         "ttft_sla_ms": int(ttft),
         "tpot_sla_ms": int(tpot),
         "raw": line,
@@ -110,11 +119,14 @@ def parse_scenario(line: str) -> dict:
 
 
 def scenario_id(sc: dict) -> str:
-    """场景 ID: random_1k_1k / gsm8k_64k_1k_hit30pct"""
+    """场景 ID: random_1k_1k / gsm8k_64k_1k_hit30pct / gsm8k_64k_1k_hit90pct_pfx3"""
     def kfmt(n: int) -> str:
         return f"{n // 1024}k" if n % 1024 == 0 else str(n)
     hit = "0" if sc["hit_rate"] == 0 else f"{sc['hit_rate']:.0%}".replace("%", "pct")
-    return f"{sc['dataset']}_{kfmt(sc['input_len'])}_{kfmt(sc['output_len'])}_hit{hit}"
+    sid = f"{sc['dataset']}_{kfmt(sc['input_len'])}_{kfmt(sc['output_len'])}_hit{hit}"
+    if sc.get("prefix_num", 1) > 1:
+        sid += f"_pfx{sc['prefix_num']}"
+    return sid
 
 
 def load_config(path: str) -> dict:
@@ -186,8 +198,10 @@ def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
         jsonl = os.path.join(DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}.jsonl")
     else:
         rr = hit if hit < 1 else 1
+        # 多前缀数据集文件名带 -pfxN，避免与单前缀互相错误复用
+        pfx = f"-pfx{sc['prefix_num']}" if sc.get("prefix_num", 1) > 1 else ""
         jsonl = os.path.join(
-            DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}-repeatRate{rr}.jsonl")
+            DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}-repeatRate{rr}{pfx}.jsonl")
     prompts = jsonl.rsplit(".", 1)[0] + ".prompts.txt"
     return jsonl, prompts
 
@@ -271,13 +285,30 @@ def build_evalscope_cmd(cfg: dict, sc: dict, dataset_path: str = None) -> list:
         cmd += ["--extra-args", json.dumps(extra)]
 
     if sc["dataset"] == "random":
-        # evalscope 在线生成随机 prompt；min=max=精确长度
-        cmd += [
-            "--dataset", "random",
-            "--min-prompt-length", str(sc["input_len"]),
-            "--max-prompt-length", str(sc["input_len"]),
-            "--prefix-length", "0",
-        ]
+        # evalscope 在线生成随机 prompt；min=max=精确长度。
+        # hit>0: 走 evalscope 原生多前缀（--prefix-length/--prefix-count，
+        # 总输入 = 前缀 + 后缀，第 index 条请求挂第 index%K 个前缀），
+        # 固定 seed 让前缀池跨次运行可复现；hit=0 保持无 seed（防跨次全 prompt 命中）
+        if sc["hit_rate"] > 0:
+            prefix_len = round(sc["input_len"] * sc["hit_rate"])
+            suffix_len = sc["input_len"] - prefix_len
+            cmd += [
+                "--dataset", "random",
+                "--min-prompt-length", str(suffix_len),
+                "--max-prompt-length", str(suffix_len),
+                "--prefix-length", str(prefix_len),
+                "--prefix-count", str(sc["prefix_num"]),
+            ]
+            random_seed = cfg["dataset"].get("random_seed")
+            if random_seed is not None:
+                cmd += ["--seed", str(random_seed)]
+        else:
+            cmd += [
+                "--dataset", "random",
+                "--min-prompt-length", str(sc["input_len"]),
+                "--max-prompt-length", str(sc["input_len"]),
+                "--prefix-length", "0",
+            ]
     else:
         # custom 数据集 + 过滤阈值（input_len + 模板开销）
         cmd += [

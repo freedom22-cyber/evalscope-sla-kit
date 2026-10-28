@@ -18,7 +18,7 @@ service:
   model: glm5.3
   # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
   # 对应权重 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx）
-  tokenizer_path: /home/hhc/model/GLM-5.3-w4a4c4-mxfp4-0902
+  tokenizer_path: /mnt/sfs_turbo/models/GLM-5.3-w4a4c8-mxfp4
 
 request:
   # 是否在请求头中加 Host 参数（经过 LB/代理/网关按域名路由时需要）
@@ -67,9 +67,10 @@ dataset:
   # 按数据集覆盖条数（Web UI 数据集视图写入）；键格式 "<input_len>_<hit_rate>"
   # 优先级高于 gsm8k_number；相同 (input_len, hit_rate) 的场景共用同一数据集
   number_overrides: {}
-  gsm8k_prefix_num: 1       # 前缀种类数（场景固定为 1）
+  gsm8k_prefix_num: 1       # 前缀种类数兜底默认（场景行 prefix_num=1 时生效）
   gsm8k_seed: 0             # 随机种子
   gsm8k_dp: 1               # DP 域数
+  random_seed: 42           # random 多前缀场景的 --seed（前缀池跨次运行可复现）
   force_regenerate: false   # true = 文件名相同也强制重新生成
 
 # ============================================================================
@@ -81,16 +82,20 @@ dataset:
 #   dataset        : random | gsm8k
 #   input_len      : 输入 token 数（k 简写 = x1024，如 1k=1024, 1000k=1024000）
 #   output_len     : 输出 token 数（同上）
-#   cache_hit_rate : 缓存命中率（random 固定 0；gsm8k: 0 / 0.3 / 0.9）
-#   prefix_num     : 前缀数量（固定 1）
+#   cache_hit_rate : 缓存命中率（random: 0 或 0<hit<1 走原生前缀；gsm8k: 0 / 0.3 / 0.6 / 0.9）
+#   prefix_num     : 前缀数量（1=单前缀；N>1=多前缀，第 i 条样本挂第 i%N 个前缀；
+#                    gsm8k 需 hit>0；random 需 hit>0，走 evalscope 原生 --prefix-count）
 #   ttft_sla_ms    : avg TTFT SLA 上限（毫秒）
 #   tpot_sla_ms    : avg TPOT SLA 上限（毫秒）
 #   dataset_num    : （可选）数据集条数，仅 gsm8k 有效；不填 = 用 dataset.gsm8k_number 全局默认
 #
 # 注意:
-#   - random 数据集由 evalscope 在线生成（0% 缓存命中，跨轮自动偏移防命中）
+#   - random 数据集由 evalscope 在线生成（hit=0 时 0% 缓存命中，跨轮自动偏移防命中）
+#   - random hit>0: evalscope 原生多前缀，总输入 = 前缀(hit×input_len) + 后缀，
+#     前缀池固定 seed（dataset.random_seed），跨并发档位共享前缀
 #   - gsm8k 数据集由 run.sh 自动生成+转格式（需要 tokenizer 与 torch/transformers）
-#   - 数据集按文件名复用：相同 (input_len, hit_rate, dataset_num) 只生成一次
+#   - 数据集按文件名复用：相同 (input_len, hit_rate, prefix_num, dataset_num) 只生成一次
+#   - 多前缀场景的 场景ID/数据集文件名 带 pfxN 后缀，与单前缀互不干扰
 #   - 注释行 = 跳过该场景；取消注释 = 启用
 #   - 批量预生成数据集: bash run.sh --gen-datasets
 # ============================================================================
@@ -125,6 +130,14 @@ scenarios:
   - "gsm8k, 256k, 1k, 0.9, 1, 10000, 50"
   - "gsm8k, 512k, 1k, 0.9, 1, 10000, 50"
   - "gsm8k, 1000k, 1k, 0.9, 1, 10000, 50"
+  # ---- gsm8k 多前缀（3 前缀，数据集 i%3 轮转挂前缀，GSM8K 真实文本前缀）----
+  - "gsm8k, 64k, 1k, 0.9, 3, 10000, 50"
+  - "gsm8k, 64k, 1k, 0.6, 3, 20000, 50"   # 0.6 介于 30%(30s) 与 90%(10s) 之间，SLA 取 20s，可调
+  - "gsm8k, 32k, 1k, 0.3, 3, 30000, 50"
+  # ---- random 多前缀（evalscope 原生 --prefix-count，随机 token 前缀，与 gsm8k 多前缀对比用）----
+  # - "random, 64k, 1k, 0.9, 3, 10000, 50"
+  # - "random, 64k, 1k, 0.6, 3, 20000, 50"
+  # - "random, 32k, 1k, 0.3, 3, 30000, 50"
 
 # ============================================================================
 # 精度测试（迁移自 sunzhi_sla_eval run208.sh cmd_accuracy, 通用化）
