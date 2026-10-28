@@ -86,7 +86,7 @@ def save_state(st):
 def effective_config():
     cfg = runner.load_config(CONFIG_PATH)
     st = load_state()
-    for sec in ("service", "request", "benchmark"):
+    for sec in ("service", "request", "benchmark", "accuracy", "functional"):
         ov = st.get(sec + "_override") or {}
         if ov:
             cfg.setdefault(sec, {}).update(ov)
@@ -677,6 +677,62 @@ def api_func_list():
 def api_acc_status():
     return dict(_ACC_TASK) if _ACC_TASK else {"status": "not_started"}
 
+@app.get("/api/accuracy/config")
+def api_acc_config():
+    """读精度数据集组配置：web_state accuracy_override 优先，否则 config.yaml accuracy 段。"""
+    cfg, st = effective_config()
+    acc = cfg.get("accuracy") or {}
+    groups = []
+    for line in acc.get("datasets") or []:
+        try:
+            g = _parse_acc_group(line)
+            g["enabled"] = True
+            groups.append(g)
+        except Exception:
+            continue
+    return {"ok": True, "groups": groups,
+            "proxy": acc.get("proxy", ""),
+            "evalscope_bin": acc.get("evalscope_bin", "evalscope"),
+            "from_override": bool(st.get("accuracy_override"))}
+
+def _parse_acc_group(line: str) -> dict:
+    """复用 accuracy_runner.parse_dataset_line 解析组行。"""
+    import accuracy_runner
+    g = accuracy_runner.parse_dataset_line(line)
+    return g
+
+@app.post("/api/accuracy/config")
+def api_acc_set_config(payload: dict = Body(...)):
+    """保存精度数据集组到 web_state.json accuracy_override（不写 config.yaml）。"""
+    st = load_state()
+    groups = payload.get("groups")
+    if groups is None:
+        return JSONResponse({"ok": False, "error": "缺少 groups"}, status_code=400)
+    lines = []
+    for g in groups:
+        line = g.get("raw")
+        if not line:
+            # 从字段拼组行: tag, datasets, rounds, effort, max_tokens, batch, k
+            line = ", ".join([
+                str(g.get("tag") or "").strip(),
+                " ".join(g.get("datasets") or []),
+                str(g.get("rounds") or 1),
+                str(g.get("effort") or "max"),
+                str(g.get("max_tokens") or 131072),
+                str(g.get("batch_size") or 32),
+                str(g.get("k") or 1),
+            ])
+        try:
+            _parse_acc_group(line)  # 校验
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"组行格式错误: {line} ({e})"}, status_code=400)
+        lines.append(line)
+    st["accuracy_override"] = {"datasets": lines}
+    if "proxy" in payload:
+        st["accuracy_override"]["proxy"] = payload["proxy"]
+    save_state(st)
+    return {"ok": True, "count": len(lines)}
+
 @app.post("/api/accuracy/run")
 def api_acc_run(payload: dict = Body(default={})):
     if _ACC_TASK.get("status") == "running":
@@ -688,6 +744,9 @@ def api_acc_run(payload: dict = Body(default={})):
     only = payload.get("only")
     if only:
         cmd += ["--only", only]
+    limit = payload.get("limit")
+    if limit:
+        cmd += ["--limit", str(int(limit))]
     threading.Thread(target=_run_generic, args=("acc", _ACC_TASK, cmd, "acc"), daemon=True).start()
     return {"ok": True}
 

@@ -575,6 +575,8 @@ document.addEventListener('click', e=>{
   if(g){ genCase(g.dataset.gen); return; }
   const d=e.target.closest&&e.target.closest('[data-del]');
   if(d&&d.tagName==='BUTTON'){ delCase(d.dataset.del); return; }
+  const a=e.target.closest&&e.target.closest('[data-accdel]');
+  if(a&&a.tagName==='BUTTON'){ delAccGroup(+a.dataset.accdel); return; }
 });
 
 /* ============================ 测试工程 ============================ */
@@ -948,24 +950,135 @@ async function viewFuncList(){
 }
 
 /* ============================ 精度测试 ============================ */
+let ACC_GROUPS = [];   // 编辑中的数据集组
+
 async function renderAccuracy(){
   const m=$('#main'); m.innerHTML='';
   m.append(el('div',{cls:'page-head'}, el('h1',{},'精度测试'),
-    el('div',{cls:'sub'},'用 evalscope 跑精度数据集（gpqa/aime/gsm8k/mmlu 等），输出 pass@k 汇总')));
+    el('div',{cls:'sub'},'用 evalscope 跑精度数据集（gpqa/aime/gsm8k/mmlu 等），输出 pass@k 汇总；可在下方设置数据集组与运行参数')));
   const bar=el('div',{cls:'toolbar'});
-  bar.append(btn('运行精度测试','play','primary',runAccuracy));
-  bar.append(btn('查看数据集组','list','',viewAccList));
+  const runBtn=btn('运行精度测试','play','primary',runAccuracy); runBtn.id='acc-run-btn';
+  bar.append(runBtn);
   bar.append(el('span',{cls:'spacer'}));
   bar.append(btn('刷新','refresh','small',renderAccuracy));
   m.append(bar);
+
+  /* 数据集组配置卡 */
+  const cfgCard=el('div',{cls:'card',id:'acc-cfg-card'});
+  m.append(cfgCard);
+  await renderAccConfig();
+
+  /* 运行参数卡 */
+  const runCard=el('div',{cls:'card'});
+  runCard.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行参数'),
+    el('span',{cls:'hint'}, '留空使用数据集组自身配置')));
+  const rg=el('div',{cls:'grid3'});
+  rg.append(field('样本上限 (--limit)','acc_limit','','冒烟用，每组只评 N 条；留空=全量','number'));
+  rg.append(field('pass@k 覆盖 (--k)','acc_k','','留空=用组内 k；填 4 即 --repeats 4','number'));
+  rg.append(field('只跑指定 tag (--only)','acc_only','','逗号分隔，如 all5；留空=全部启用组'));
+  runCard.append(rg);
+  runCard.append(el('div',{cls:'row-actions'},
+    btn('用这些参数运行','play','primary',()=>runAccuracy(true))));
+  m.append(runCard);
+
   m.append(el('div',{id:'acc-status-card'}));
   m.append(el('div',{id:'acc-report-card'}));
   await refreshAccStatus();
+}
+
+async function renderAccConfig(){
+  const card=$('#acc-cfg-card'); if(!card) return;
+  card.innerHTML='';
+  const r=await api('/api/accuracy/config');
+  ACC_GROUPS = (r.groups||[]).map(g=>({...g}));
+  card.append(el('h2',{}, iconEl('target'), el('span',{},'数据集组'),
+    el('span',{cls:'hint'}, (r.from_override?'来自页面配置':'来自 config.yaml')+' · '+ACC_GROUPS.length+' 组')));
+  if(!ACC_GROUPS.length){
+    card.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon('target')}), el('div',{},'暂无数据集组，点下方「添加数据集组」')));
+  }else{
+    const wrap=el('div',{style:'overflow:auto'});
+    const tb=el('table');
+    tb.innerHTML='<thead><tr><th>tag</th><th>数据集（空格分隔）</th><th>轮数</th><th>effort</th>'
+      +'<th>max_tokens</th><th>batch</th><th>k</th><th>操作</th></tr></thead>';
+    const tbody=el('tbody');
+    ACC_GROUPS.forEach((g,i)=>{
+      const tr=el('tr'); tr.dataset.gi=i;
+      tr.innerHTML=
+        '<td><input class="gi" data-f="tag" value="'+esc(g.tag||'')+'" style="width:90px"></td>'
+        +'<td><input class="gi" data-f="datasets" value="'+esc((g.datasets||[]).join(' '))+'" style="width:220px"></td>'
+        +'<td><input class="gi" data-f="rounds" type="number" value="'+(g.rounds||1)+'" style="width:60px"></td>'
+        +'<td><input class="gi" data-f="effort" value="'+esc(g.effort||'max')+'" style="width:70px"></td>'
+        +'<td><input class="gi" data-f="max_tokens" type="number" value="'+(g.max_tokens||131072)+'" style="width:90px"></td>'
+        +'<td><input class="gi" data-f="batch_size" type="number" value="'+(g.batch_size||32)+'" style="width:60px"></td>'
+        +'<td><input class="gi" data-f="k" type="number" value="'+(g.k||1)+'" style="width:50px"></td>'
+        +'<td><button class="small danger" data-accdel="'+i+'">删除</button></td>';
+      tbody.append(tr);
+    });
+    tb.append(tbody); wrap.append(tb); card.append(wrap);
+  }
+  const ops=el('div',{cls:'row-actions'});
+  ops.append(btn('添加数据集组','plus','',addAccGroup));
+  ops.append(btn('保存数据集组','save','primary',saveAccConfig));
+  card.append(ops);
+}
+function collectAccGroups(){
+  const rows=$$('#acc-cfg-card tbody tr[data-gi]');
+  return rows.map(tr=>{
+    const o={};
+    $$('input.gi',tr).forEach(inp=>{
+      const f=inp.dataset.f;
+      o[f] = f==='datasets' ? inp.value.trim().split(/\s+/).filter(Boolean) : inp.value;
+    });
+    ['rounds','max_tokens','batch_size','k'].forEach(f=>o[f]=+o[f]||undefined);
+    return o;
+  }).filter(g=>g.tag && g.datasets && g.datasets.length);
+}
+async function addAccGroup(){
+  ACC_GROUPS=collectAccGroups();
+  ACC_GROUPS.push({tag:'',datasets:[],rounds:1,effort:'max',max_tokens:131072,batch_size:32,k:1});
+  redrawRows($('#acc-cfg-card'));
+}
+async function delAccGroup(i){
+  ACC_GROUPS=collectAccGroups();
+  ACC_GROUPS.splice(i,1);
+  redrawRows($('#acc-cfg-card'));
+}
+function redrawRows(card){
+  if(!card) return;
+  const old=card.querySelector('table'); if(!old) return;
+  const wrap=old.parentElement;
+  wrap.innerHTML='';
+  const tb=el('table');
+  tb.innerHTML='<thead><tr><th>tag</th><th>数据集（空格分隔）</th><th>轮数</th><th>effort</th>'
+    +'<th>max_tokens</th><th>batch</th><th>k</th><th>操作</th></tr></thead>';
+  const tbody=el('tbody');
+  ACC_GROUPS.forEach((g,i)=>{
+    const tr=el('tr'); tr.dataset.gi=i;
+    tr.innerHTML=
+      '<td><input class="gi" data-f="tag" value="'+esc(g.tag||'')+'" style="width:90px"></td>'
+      +'<td><input class="gi" data-f="datasets" value="'+esc((g.datasets||[]).join(' '))+'" style="width:220px"></td>'
+      +'<td><input class="gi" data-f="rounds" type="number" value="'+(g.rounds||1)+'" style="width:60px"></td>'
+      +'<td><input class="gi" data-f="effort" value="'+esc(g.effort||'max')+'" style="width:70px"></td>'
+      +'<td><input class="gi" data-f="max_tokens" type="number" value="'+(g.max_tokens||131072)+'" style="width:90px"></td>'
+      +'<td><input class="gi" data-f="batch_size" type="number" value="'+(g.batch_size||32)+'" style="width:60px"></td>'
+      +'<td><input class="gi" data-f="k" type="number" value="'+(g.k||1)+'" style="width:50px"></td>'
+      +'<td><button class="small danger" data-accdel="'+i+'">删除</button></td>';
+    tbody.append(tr);
+  });
+  tb.append(tbody); wrap.append(tb);
+}
+async function saveAccConfig(){
+  const groups=collectAccGroups();
+  if(!groups.length){ toast('至少保留一个有效数据集组'); return; }
+  const r=await api('/api/accuracy/config',{method:'POST',body:JSON.stringify({groups})});
+  toast(r.ok?('已保存 '+r.count+' 个数据集组'):('保存失败: '+(r.error||'')));
+  if(r.ok) await renderAccConfig();
 }
 async function refreshAccStatus(){
   const st=await api('/api/accuracy/status');
   if(!$('#acc-status-card')) return;
   const running=st.status==='running';
+  const rb=$('#acc-run-btn'); if(rb) rb.disabled=running;
   statusCard('acc-status-card', st, running);
   if(running){ setTimeout(async()=>{ await refreshAccStatus(); await loadAccReport(); },6000); }
   else { await loadAccReport(); }
@@ -974,8 +1087,15 @@ async function loadAccReport(){
   const r=await api('/api/accuracy/report');
   reportCard('acc-report-card', r, 'target', '暂无精度结果，点上方「运行精度测试」开始');
 }
-async function runAccuracy(){
-  const r=await api('/api/accuracy/run',{method:'POST',body:'{}'});
+async function runAccuracy(withParams){
+  let body={};
+  if(withParams){
+    const lim=$('#cfg-acc_limit').value, k=$('#cfg-acc_k').value, only=$('#cfg-acc_only').value.trim();
+    if(lim) body.limit=+lim;
+    if(k) body.k=+k;
+    if(only) body.only=only;
+  }
+  const r=await api('/api/accuracy/run',{method:'POST',body:JSON.stringify(body)});
   if(r.ok) toast('精度测试已启动'); else toast('启动失败: '+(r.error||''));
   await refreshAccStatus();
 }
