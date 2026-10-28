@@ -471,7 +471,7 @@ async function renderCases(){
   const wrap=el('div',{style:'overflow:auto;max-height:520px'});
   const tb=el('table');
   tb.innerHTML='<thead><tr><th>启用</th><th>用例 ID</th><th>数据集</th><th>输入</th>'
-    +'<th>输出</th><th>命中</th><th>TTFT SLA</th><th>TPOT SLA</th>'
+    +'<th>输出</th><th>命中</th><th>前缀数</th><th>TTFT SLA</th><th>TPOT SLA</th>'
     +'<th>数据集条数</th><th>数据集状态</th><th>操作</th></tr></thead>';
   const tbody=el('tbody');
   cases.forEach(c=>{
@@ -495,7 +495,8 @@ async function renderCases(){
       +'<td>'+esc(c.dataset)+'</td>'
       +'<td class="mono">'+kfmt(c.input_len)+'</td>'
       +'<td class="mono">'+kfmt(c.output_len)+'</td>'
-      +'<td>'+hitfmt(c.hit_rate)+(c.prefix_num>1?' <span class="pill running" style="font-size:9px">P'+c.prefix_num+'</span>':'')+'</td>'
+      +'<td>'+hitfmt(c.hit_rate)+'</td>'
+      +'<td class="mono">'+(c.prefix_num||1)+(c.prefix_num>1?' <span class="pill running" style="font-size:9px">多前缀</span>':'')+'</td>'
       +'<td class="mono">'+c.ttft_sla_ms+' ms</td>'
       +'<td class="mono">'+c.tpot_sla_ms+' ms</td>'
       +'<td>'+dsCell+'</td>'

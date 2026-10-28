@@ -110,11 +110,19 @@ def parse_scenario(line: str) -> dict:
 
 
 def scenario_id(sc: dict) -> str:
-    """场景 ID: random_1k_1k / gsm8k_64k_1k_hit30pct"""
+    """场景 ID: random_1k_1k / gsm8k_64k_1k_hit30pct / gsm8k_64k_1k_hit90pct_pN3
+
+    prefix_num > 1 时加 _pN{n} 后缀——不同前缀种类数是不同用例
+    （数据集前缀池不同），否则同名冲突。
+    """
     def kfmt(n: int) -> str:
         return f"{n // 1024}k" if n % 1024 == 0 else str(n)
     hit = "0" if sc["hit_rate"] == 0 else f"{sc['hit_rate']:.0%}".replace("%", "pct")
-    return f"{sc['dataset']}_{kfmt(sc['input_len'])}_{kfmt(sc['output_len'])}_hit{hit}"
+    sid = f"{sc['dataset']}_{kfmt(sc['input_len'])}_{kfmt(sc['output_len'])}_hit{hit}"
+    pnum = sc.get("prefix_num") or 1
+    if int(pnum) > 1:
+        sid += f"_pN{int(pnum)}"
+    return sid
 
 
 def load_config(path: str) -> dict:
