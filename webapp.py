@@ -819,6 +819,15 @@ def api_acc_config():
             all_datasets.update(g["datasets"])
         except Exception:
             continue
+    # 可用数据集：override 后的 + config.yaml 原始的（防止 override 覆盖后丢失全集）
+    raw_cfg = runner.load_config(CONFIG_PATH)
+    raw_acc = raw_cfg.get("accuracy") or {}
+    for line in raw_acc.get("datasets") or []:
+        try:
+            g = _parse_acc_group(line)
+            all_datasets.update(g["datasets"])
+        except Exception:
+            continue
     return {"ok": True, "groups": groups,
             "available_datasets": sorted(all_datasets),
             "proxy": acc.get("proxy", ""),
