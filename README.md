@@ -94,6 +94,7 @@ bash run.sh --accuracy -f                   # 前台跑（看实时输出）
 python3 accuracy_runner.py --list           # 列出启用的数据集组（含 k 与口径）
 python3 accuracy_runner.py --dry-run        # 只打印命令与 work-dir，不执行
 python3 accuracy_runner.py --only all5       # 只跑指定组（tag 见 --list）
+python3 accuracy_runner.py --only all5 --resume   # 断点续跑：复用已有 predictions 只补缺样本
 python3 accuracy_runner.py --k 4            # 临时覆盖 pass@k 的 k（覆盖 config）
 python3 accuracy_runner.py --report         # 不跑测试，重打已有结果汇总表
 ```
@@ -122,17 +123,62 @@ python3 accuracy_runner.py --report         # 不跑测试，重打已有结果�
 
 ### pass@k 口径怎么落地
 
-k>1 时 runner 在 evalscope 命令上追加两个参数（其余参数与单次口径一致）：
+k>1 时 runner 对 evalscope 命令做三处改动（其余参数与单次口径一致）：
+
+1. CLI 从 `evalscope` 切换到 **`tools/passk_evalscope.py`**（wrapper，行为与原
+   CLI 完全一致，只多一步 dataset-args 预处理）；
+2. 追加 `--repeats <k>`（每题采样 k 次，请求量 × k）；
+3. 追加 `--dataset-args`（每个数据集都要给，主指标取本组的 pass@k，即 k）：
 
 ```
---repeats <k>
---dataset-args '{"<每个数据集>": {"aggregation": "mean_and_pass_at_k"}}'
+--dataset-args '{"<ds>": {"aggregation": "mean_and_pass_at_k",
+                          "primary_metric": {"name": "accuracy", "aggregation": "pass_at_k",
+                                             "dimensions": {"k": <k>}}}}'
 ```
 
 `--repeats` 让每题被复制 k 份各采样一次（evalscope 内部按 `group_size=k`
 重新分组），`mean_and_pass_at_k` 聚合器据此算出 mean 与 pass@1..pass@k。
+`primary_metric` 必须显式声明：该聚合产出 k+1 个非诊断指标，evalscope 1.14.x
+的报告生成器要求唯一主指标，缺了必崩（`ValueError: Found 5 non-diagnostic
+metric identities; no unique primary metric`）；而 JSON dict 形式的
+primary_metric 只有转成 `MetricSelector` 对象才有效（这正是 wrapper 存在的
+原因，机制细节见 `tools/passk_evalscope.py` 头注释）。
 结果目录与 k=1 的单次口径分开（`<tag>_pass@k<k>_r<N>`），不同 k 也各占一个目录，
 两种口径/各 k 的结果不会互相覆盖。
+
+> **冒烟（`--limit N`）另存目录**：`<tag>_pass@k<k>_limit<N>_r<N>`。limit 会
+> 截断样本数，若与全量共用 work-dir，冒烟结果会覆盖全量报告、并把少量预测混进
+> 全量 predictions 缓存（后续 `--resume` 会静默复用这批脏缓存）。所以 limit
+> 单独隔离目录。注意 `--limit` 是**每个子集 N 条**：mmlu 有 57 个子集，
+> `--limit 5` 实际会评 5×57=285 题。
+
+### 断点续跑（--resume）
+
+精度一轮动辄数小时（all5 全量 + pass@k 的 ×4 请求量 ≈ 20h），中途崩掉或被打断后
+**不要删 work-dir 重跑**——`predictions/` 里是已完成的推理成果。`--resume` 让
+evalscope 复用它们，只补缺的样本、重算判分与报告：
+
+```bash
+python3 accuracy_runner.py --only all5 --k 4 --resume   # 自动指向 results/accuracy/all5_pass@k4_r1
+bash run.sh --accuracy --resume                          # 等价（参数透传给 runner）
+```
+
+底层是给 evalscope 追加两个参数（runner 自动带上，无需手填）：
+
+- `--use-cache <work-dir>`：work-dir 指向已有目录，按样本 id 复用 predictions、
+  缺哪补哪。实测 gpqa 792 条预测（96MB）复用 + 重出报告只花 1.7s，对比原路 4h。
+- `--rerun-review`：**必带**。evalscope 会校验"缓存身份哈希"（命令 + 数据集参数
+  的指纹），命令一变（如中途补了 `primary_metric`）就对不上并拒跑：
+  `ValueError: Cached evaluation identity does not match`。`--rerun-review`
+  表示明确放弃哈希核对、复用 predictions、重算 review/聚合/报告（规则判分，秒级）。
+
+注意：
+
+- 身份校验被 `--rerun-review` 绕过后，evalscope **不再帮你核对**缓存 predictions
+  是否与本次命令同口径——改了 k / 换数据集组合 / 换采样参数还继续 `--resume`，
+  旧预测会被静默混进新报告。换口径请换 tag（新 work-dir）。
+- `tools/wait_service_passk.sh` 检测到 work-dir 已有 predictions 时自动加
+  `--resume`：服务闪断 → 守护等待恢复 → 断点续跑，全程不需要人工记命令。
 
 ### reasoning_effort 已知缺陷
 
@@ -385,7 +431,8 @@ bash run.sh --only gsm8k_64k_1k_hit30pct   # 只重跑一个场景
 | `tools/jsonl_to_prompts.py` | jsonl → 纯文本 prompts.txt |
 | `tools/data_picker.py` | 数据集挑选 |
 | `tools/f05_claude_code.sh` | F-05 claude code CLI 会话（问答 + 工具调用）自动化；`functional_runner.py` 里的 F-05 只做存在性检查（恒 SKIP），真会话跑这个脚本 |
-| `tools/wait_service_passk.sh` | 守护：等 ModelArts 服务恢复健康后自动启动 pass@k 评测（健康判定走 `/v1/models` + 极小流式对话，**curl 一律 `--noproxy '*'`**） |
+| `tools/passk_evalscope.py` | evalscope CLI wrapper：把 `--dataset-args` 里 JSON dict 形式的 `primary_metric` 转成 `MetricSelector` 对象（pass@k 报告期必需，否则 no-unique-primary-metric 必崩；k>1 时 runner 自动切到它） |
+| `tools/wait_service_passk.sh` | 守护：等 ModelArts 服务恢复健康后自动启动 pass@k 评测（健康判定走 `/v1/models` + 极小流式对话，**curl 一律 `--noproxy '*'`**）；work-dir 已有 predictions 时自动带 `--resume` 断点续跑 |
 | `tools/queue_passk.sh` | 守护：等前序精度评测退出后自动启动 pass@k 评测（等"没有精度进程在跑"，不是等写死的 PID） |
 
 两个守护脚本都用锁目录防双跑，地址/模型从 `config.yaml` 的 `service` 段读，
@@ -430,3 +477,13 @@ setsid nohup bash tools/wait_service_passk.sh > logs/acc_passk_queue.log 2>&1 &
     指标为空 / 报告结构变化）同样是假通过，runner 按 exit 1 处理。
 14. **显式指定的路径找不到就照实报错**：不要用"本机已知路径"兜底覆盖显式配置，
     否则两台机器会静默跑不同版本的 evalscope，分数不可比。
+15. **pass@k 报告期必崩 "no unique primary metric"**：`mean_and_pass_at_k`
+    产出 k+1 个非诊断指标，evalscope 1.14.0 报告生成器要求唯一主指标；且
+    `primary_metric` 只认 `MetricSelector` 对象——JSON dict 直接 AttributeError，
+    字符串会被归一化成通配、依旧歧义。只能经 `tools/passk_evalscope.py`
+    wrapper 从 `--dataset-args` 注入（runner 在 k>1 时已自动切换）。
+16. **evalscope 缓存身份哈希会拒跑**：`--use-cache` 续跑时 evalscope 校验命令
+    指纹，命令一变（补参数、换口径）即 `ValueError: Cached evaluation identity
+    does not match`。断点续跑必须带 `--rerun-review`（复用 predictions、重算
+    判分与报告，秒级；runner 的 `--resume` 已自动带上）。代价是身份校验被绕过，
+    换口径续跑会把旧预测静默混进新报告——换口径请换 tag。

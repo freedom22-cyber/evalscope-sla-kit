@@ -100,10 +100,12 @@ if [ "$ok_count" -lt 2 ]; then
   exit 1
 fi
 
-# 清理上次失败残留(仅 configs/空 predictions, 失败日志仍在 logs/acc_passk_*.log)
-if [ -d "$WORK_DIR" ]; then
-  FAILED_DIR="${WORK_DIR}_failed_$(date +%m%d_%H%M)"
-  mv "$WORK_DIR" "$FAILED_DIR" && log "失败残留已移至 $FAILED_DIR"
+# 失败恢复: 不挪走 work-dir —— 里面的 predictions/reviews 是几小时的推理成果,
+# 交给 runner --resume 复用（evalscope --use-cache 只补缺样本并重出报告）
+RESUME_ARG=""
+if [ -d "$WORK_DIR/predictions" ]; then
+  RESUME_ARG="--resume"
+  log "检测到已有 predictions, 以 --resume 断点续跑: $WORK_DIR"
 fi
 
 mkdir -p logs
@@ -113,7 +115,7 @@ log "服务已恢复, 启动 pass@k 测试 (repeats=$K, x$K 请求量), 日志: 
 log "  work-dir: $WORK_DIR"
 
 # 精度命令统一由 accuracy_runner.py 生成 (k>1 时自动带 --repeats/--dataset-args)
-"$PY_BIN" accuracy_runner.py --only "$TAG" --k "$K" > "$LOG" 2>&1
+"$PY_BIN" accuracy_runner.py --only "$TAG" --k "$K" $RESUME_ARG > "$LOG" 2>&1
 rc=$?
 log "pass@k 测试结束 rc=$rc"
 log "  结果: $WORK_DIR/reports/  (metrics 里 aggregation=pass_at_k, dimensions.k=1..$K; mean 也在)"
