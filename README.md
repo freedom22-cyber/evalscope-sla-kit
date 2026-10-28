@@ -106,8 +106,10 @@ python3 webapp.py --port 8300
 ```bash
 bash run.sh --accuracy                      # 后台跑所有启用数据集组
 bash run.sh --accuracy -f                   # 前台跑
+bash run.sh --accuracy --resume             # 后台断点续跑（复用已有 predictions）
 python3 accuracy_runner.py --list           # 列出启用的数据集组
 python3 accuracy_runner.py --only all5      # 只跑指定组
+python3 accuracy_runner.py --only all5 --resume   # 断点续跑：复用已有 predictions 只补缺样本
 python3 accuracy_runner.py --k 4            # 覆盖 pass@k 的 k
 python3 accuracy_runner.py --limit 10       # 冒烟：每组只评 10 条
 python3 accuracy_runner.py --report         # 重打已有结果汇总表
@@ -127,7 +129,93 @@ python3 accuracy_runner.py --report         # 重打已有结果汇总表
 | `effort` | `reasoning_effort`（`medium` 在部分部署上必 400，避开） |
 | `max_tokens` | 生成上限 |
 | `batch_size` | `--eval-batch-size` |
-| `k` |（可选）pass@k 采样次数，默认 `1` |
+| `k` |（可选）pass@k 的采样次数，默认 `1` = 单次 mean 口径；`k>1` 时请求量 × k |
+
+其他键：`evalscope_bin`（evalscope 可执行文件，可被环境变量 `EVALSCOPE_BIN`
+覆盖）；`proxy`（非空时给子进程导出 `http_proxy`/`https_proxy`——evalscope 首次
+下载评测集需要外网；被测服务主机名自动加入 `no_proxy` 防劫持，不污染父进程环境）。
+
+### pass@k 口径怎么落地
+
+k>1 时 runner 对 evalscope 命令做三处改动（其余参数与单次口径一致）：
+
+1. CLI 从 `evalscope` 切换到 **`tools/passk_evalscope.py`**（wrapper，行为与原
+   CLI 完全一致，只多一步 dataset-args 预处理）；
+2. 追加 `--repeats <k>`（每题采样 k 次，请求量 × k）；
+3. 追加 `--dataset-args`（每个数据集都要给，主指标取本组的 pass@k，即 k）：
+
+```
+--dataset-args '{"<ds>": {"aggregation": "mean_and_pass_at_k",
+                          "primary_metric": {"name": "accuracy", "aggregation": "pass_at_k",
+                                             "dimensions": {"k": <k>}}}}'
+```
+
+`--repeats` 让每题被复制 k 份各采样一次（evalscope 内部按 `group_size=k`
+重新分组），`mean_and_pass_at_k` 聚合器据此算出 mean 与 pass@1..pass@k。
+`primary_metric` 必须显式声明：该聚合产出 k+1 个非诊断指标，evalscope 1.14.x
+的报告生成器要求唯一主指标，缺了必崩（`ValueError: Found 5 non-diagnostic
+metric identities; no unique primary metric`）；而 JSON dict 形式的
+primary_metric 只有转成 `MetricSelector` 对象才有效（这正是 wrapper 存在的
+原因，机制细节见 `tools/passk_evalscope.py` 头注释）。
+结果目录与 k=1 的单次口径分开（`<tag>_pass@k<k>_r<N>`），不同 k 也各占一个目录，
+两种口径/各 k 的结果不会互相覆盖。
+
+> **冒烟（`--limit N`）另存目录**：`<tag>_pass@k<k>_limit<N>_r<N>`。limit 会
+> 截断样本数，若与全量共用 work-dir，冒烟结果会覆盖全量报告、并把少量预测混进
+> 全量 predictions 缓存（后续 `--resume` 会静默复用这批脏缓存）。所以 limit
+> 单独隔离目录。注意 `--limit` 是**每个子集 N 条**：mmlu 有 57 个子集，
+> `--limit 5` 实际会评 5×57=285 题。
+
+### 断点续跑（--resume）
+
+精度一轮动辄数小时（all5 全量 + pass@k 的 ×4 请求量 ≈ 20h），中途崩掉或被打断后
+**不要删 work-dir 重跑**——`predictions/` 里是已完成的推理成果。`--resume` 让
+evalscope 复用它们，只补缺的样本、重算判分与报告：
+
+```bash
+python3 accuracy_runner.py --only all5 --k 4 --resume   # 自动指向 results/accuracy/all5_pass@k4_r1
+bash run.sh --accuracy --resume                          # 等价（参数透传给 runner）
+```
+
+底层是给 evalscope 追加两个参数（runner 自动带上，无需手填）：
+
+- `--use-cache <work-dir>`：work-dir 指向已有目录，按样本 id 复用 predictions、
+  缺哪补哪。实测 gpqa 792 条预测（96MB）复用 + 重出报告只花 1.7s，对比原路 4h。
+- `--rerun-review`：**必带**。evalscope 会校验"缓存身份哈希"（命令 + 数据集参数
+  的指纹），命令一变（如中途补了 `primary_metric`）就对不上并拒跑：
+  `ValueError: Cached evaluation identity does not match`。`--rerun-review`
+  表示明确放弃哈希核对、复用 predictions、重算 review/聚合/报告（规则判分，秒级）。
+
+注意：
+
+- 身份校验被 `--rerun-review` 绕过后，evalscope **不再帮你核对**缓存 predictions
+  是否与本次命令同口径——改了 k / 换数据集组合 / 换采样参数还继续 `--resume`，
+  旧预测会被静默混进新报告。换口径请换 tag（新 work-dir）。
+- `tools/wait_service_passk.sh` 检测到 work-dir 已有 predictions 时自动加
+  `--resume`：服务闪断 → 守护等待恢复 → 断点续跑，全程不需要人工记命令。
+
+### reasoning_effort 已知缺陷
+
+effort 通过 generation-config 的 `extra_body` 顶层展开进请求体（evalscope →
+OpenAI SDK，已抓包验证）。服务端接受 `low/high/xhigh/max/none` 及整数 1~100；
+**`"medium"` 在部分部署上必 HTTP 400**（服务端 chat template 校验拒绝，见
+sunzhi 仓 F-03 / docs/lessons_api208.md §4），配置时避开。
+
+### 结果与汇总
+
+- 每组每轮跑完即打印 `  [tag_r1] gsm8k: score=0.94 (n=1319)`；
+  pass@k 口径再追加一行 `  [tag_r1] gsm8k: pass@1=0.87  pass@2=0.94  ...`；
+  多轮同组结束后打印均值（mean 与各 pass@k 分别平均）。
+- 分数来源：`results/accuracy/<tag>_r<N>/reports/<model>/<ds>.json` 的 `metrics`：
+  `identity.aggregation=="mean"` 的 `score`/`num`（mean 口径），
+  `identity.aggregation=="pass_at_k"` 且 `identity.dimensions.k==n` 的 `score`
+  （pass@n）。文件缺失/解析失败按缺失提示，不中断。
+- 每跑完一轮就追加写 `results/accuracy/scores.md`（时间戳头 + tag/轮/数据集/mean/n +
+  pass@1..pass@k 列），中途被打断也保留已完成轮次；`--report` 可随时重打汇总表。
+- 分组 key 带 k（`all5_pass@k4`），所以 k=1 与 k=4 的同 tag 结果**不会**被当成
+  两轮混在一起算均值，实时表与 `--report` 表的 tag 也一致。
+- 退出码：任一组失败 → 1；**evalscope 退出码 0 但没解析到分数也按假通过记 1**
+  （报告缺失 / 指标为空 / 报告结构变化都会落到这里）；`--only` 含未知 tag → 2。
 
 ## 功能测试（scripts/run_api_e2e.py）
 
@@ -219,13 +307,101 @@ bash run.sh --gen-datasets            # 批量预生成所有 gsm8k 数据集
 - `python3 report.py` 输出每场景各并发的 TTFT/TPOT/吞吐表 + SLA 判定列
 - 摸高结论 = 最大达标并发 + 该并发下的 avg TTFT / avg TPOT / 输出吞吐
 
-## 已知坑
+## 预算看门狗与 SLA 判定
+
+### 单场景时间预算 `time_budget_min`
+
+- `>0`（分钟）时该场景压测到限即被终止，并按**已完成的探测档**算 partial 结论，
+  写入 `results/<场景ID>/partial_summary.json`（含 `status` / `selected` / `probes` 明细）；
+  `0` = 不限制。
+- **partial 语义**：搜索被预算切断时结论不完整，`selected`（最大达标并发）是
+  真实上限的**下界**，真实上限落在 `(selected, 首个违反档)` 区间内。
+
+### partial 判定规则（失败请求零容忍）
+
+- 逐档解析 `results/<场景ID>/<时间戳>/<model>/sla_tuning/sla_parallel_N_run_M/benchmark_summary.json`：
+  TTFT / TPOT 按 run 取算术平均，Success / Failed / Total 按 run 求和；
+  缺 `benchmark_summary.json` 的档（被切断）直接跳过。
+- 该档 **Failed 之和必须为 0**，且 avg TTFT / avg TPOT 双达标才算 PASS；
+  selected = 达标档中的最大并发。
+
+### 健康探活 `health_check_interval_s`
+
+- `>0`（秒）时压测运行期间每隔该秒数 GET 一次服务 `/v1/models`（连通性检查，
+  任意 HTTP 状态码都算存活）；连续 ≥3 次失败打告警（**只告警不杀进程**），
+  恢复后计数清零；`0` = 关闭。
+
+### report.py 的 SLA 判定
+
+- 每场景并发表多一列 `判定`：Failed==0 且 TTFT / TPOT 双达标 → `PASS`，否则 `FAIL`
+  （判据取自 config.yaml 对应场景行；场景不在 config 中则跳过该列）。
+- 每表末尾给结论：`SLA 判定: 最大达标并发 = N` 或
+  `SLA 判定: 无达标档（Failed at lower bound）`。
+
+## 工具脚本（tools/）
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/gen_dataset_only.py` / `tools/generate_dataset.py` | gsm8k 定长数据集生成（aisbench） |
+| `tools/jsonl_to_prompts.py` | jsonl → 纯文本 prompts.txt |
+| `tools/data_picker.py` | 数据集挑选 |
+| `tools/f05_claude_code.sh` | F-05 claude code CLI 会话（问答 + 工具调用）自动化；`functional_runner.py` 里的 F-05 只做存在性检查（恒 SKIP），真会话跑这个脚本 |
+| `tools/passk_evalscope.py` | evalscope CLI wrapper：把 `--dataset-args` 里 JSON dict 形式的 `primary_metric` 转成 `MetricSelector` 对象（pass@k 报告期必需，否则 no-unique-primary-metric 必崩；k>1 时 runner 自动切到它） |
+| `tools/wait_service_passk.sh` | 守护：等 ModelArts 服务恢复健康后自动启动 pass@k 评测（健康判定走 `/v1/models` + 极小流式对话，**curl 一律 `--noproxy '*'`**）；work-dir 已有 predictions 时自动带 `--resume` 断点续跑 |
+| `tools/queue_passk.sh` | 守护：等前序精度评测退出后自动启动 pass@k 评测（等"没有精度进程在跑"，不是等写死的 PID） |
+
+两个守护脚本都用锁目录防双跑，地址/模型从 `config.yaml` 的 `service` 段读，
+不写死在脚本里。
+
+```bash
+setsid nohup bash tools/wait_service_passk.sh > logs/acc_passk_queue.log 2>&1 &
+```
+
+## 已知坑（实测教训）
 
 1. **tokenizer_path 必须本机存在**：不存在时 modelscope 退化成远程下载 → 404。runner 有预检。
-2. **gsm8k 数据集生成需 torch + transformers**；random 场景不需要。
-3. **thinking 模型**必须 `chat_template_kwargs.thinking=false`，否则思考 token 拉高 TPOT。
-4. **`ignore_eos: true`** 让输出固定到 max_tokens，TPOT/吞吐才可比。
-5. **MaaS 网关 60s 首字节超时**：功能用例 chat 一律走流式，精度 generation-config 带 `stream: true`。
-6. **环境 `http_proxy` 劫持内网请求**：功能测试用 `build_opener(ProxyHandler({}))` 绕开。
-7. **退出码 0 不等于通过**：精度评测 evalscope 退出 0 但没解析到分数也是假通过。
-8. **停止任务需杀进程树**：`killpg(SIGKILL)` 整组杀，`proc.kill()` 只杀直接子进程不够。
+2. **`Dataset is empty!`**：gsm8k jsonl 没转纯文本 prompts.txt，或
+   `--max-prompt-length` 小于 数据集长度+模板开销。runner 已自动处理
+   （阈值 = input_len + 2000）。
+3. **131k 数据集加 chat template 后实测 ~131160 token**：阈值必须留余量，
+   否则全部请求被过滤。
+4. **摸高耗时数小时**（长输入场景单轮数十分钟 × 二分点数 × 轮数）：
+   必须 nohup 后台 + 定期 tail；服务报错要能快速发现。
+5. **`Failed at lower bound (1)` 多为请求失败而非指标不达标**：先看
+   Success/Total（0 成功 = 服务 400/端口不通），curl 单发一条请求确认。
+6. **gsm8k 数据集生成需 torch + transformers**（NPU/GPU 容器内一般已有）；
+   random 场景不需要。
+7. **数据集按文件名复用**：改 seed/prefix_num/dp 后需 `force_regenerate: true`
+   或手动删 `datasets/` 下对应文件。
+8. **picked_ids.txt 累积**：数据集生成报"请清空 picked ids"时删除
+   `tools/picked_ids.txt` 重跑。
+9. **thinking 模型**必须 `chat_template_kwargs.thinking=false`（见上）。
+10. **`ignore_eos: true`** 让输出固定到 max_tokens，TPOT/吞吐才可比（默认已开）。
+11. **MaaS 网关有 60s 首字节超时**：非流式请求的首字节 = 整个响应，思考型模型的
+    长回答必然踩雷（网关返 504，看起来像服务坏了）。功能用例的 chat 一律走流式，
+    精度评测的 generation-config 也必须带 `stream: true`。
+12. **思考型模型（GLM-5.3 强制思考）的输出预算**：预算太小会被思考链吃光、正文
+    为空（`content: null` + `finish_reason: length`）。功能用例给
+    `functional.max_tokens: 2048`；旧代码用子串匹配 `"content"` 判过（值为
+    `null` 也算 PASS），现在改成"正文非空"才算过。
+13. **环境里的 `http_proxy` 会劫持内网请求**：功能测试与健康探测都要绕开它——
+    curl 加 `--noproxy '*'`，python 用 `build_opener(ProxyHandler({}))`。不绕的
+    话健康探测会一直拿不到 200（守护脚本就会空等）。精度评测是另一回事：
+    `accuracy.proxy` 非空时是**故意**给子进程导出代理给数据集首次下载用，
+    同时把被测服务主机名塞进 `no_proxy`。
+14. **退出码 0 不等于通过**：精度评测 evalscope 退出 0 但没解析到分数（报告缺失 /
+    指标为空 / 报告结构变化）同样是假通过，runner 按 exit 1 处理。
+15. **显式指定的路径找不到就照实报错**：不要用"本机已知路径"兜底覆盖显式配置，
+    否则两台机器会静默跑不同版本的 evalscope，分数不可比。
+16. **pass@k 报告期必崩 "no unique primary metric"**：`mean_and_pass_at_k`
+    产出 k+1 个非诊断指标，evalscope 1.14.0 报告生成器要求唯一主指标；且
+    `primary_metric` 只认 `MetricSelector` 对象——JSON dict 直接 AttributeError，
+    字符串会被归一化成通配、依旧歧义。只能经 `tools/passk_evalscope.py`
+    wrapper 从 `--dataset-args` 注入（runner 在 k>1 时已自动切换）。
+17. **evalscope 缓存身份哈希会拒跑**：`--use-cache` 续跑时 evalscope 校验命令
+    指纹，命令一变（补参数、换口径）即 `ValueError: Cached evaluation identity
+    does not match`。断点续跑必须带 `--rerun-review`（复用 predictions、重算
+    判分与报告，秒级；runner 的 `--resume` 已自动带上）。代价是身份校验被绕过，
+    换口径续跑会把旧预测静默混进新报告——换口径请换 tag。
+18. **停止任务需杀进程树**：`killpg(SIGKILL)` 整组杀，`proc.kill()` 只杀直接
+    子进程不够（evalscope 还会派生 worker）。

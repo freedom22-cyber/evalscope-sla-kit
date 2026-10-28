@@ -11,6 +11,7 @@
 #   bash run.sh --report [--npu 16] # 汇总已有摸高结果
 #   bash run.sh --accuracy          # 后台跑精度（accuracy_runner.py, 日志 acc_*.log）
 #   bash run.sh --accuracy -f       # 前台跑精度
+#   bash run.sh --accuracy --resume # 后台断点续跑精度（复用已有 predictions, 见 README "断点续跑"）
 #   bash run.sh --functional        # 后台跑功能检查（scripts/run_api_e2e.py, 日志 func_*.log）
 #   bash run.sh --functional -f     # 前台跑功能检查
 # ============================================================================

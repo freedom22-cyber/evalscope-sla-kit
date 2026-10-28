@@ -29,8 +29,18 @@ pass@1..pass@k（k 次里至少对一次的概率）。k=1 时退化为原来的
     4. accuracy.proxy 非空时给子进程单独导出 http_proxy/https_proxy（评测集首次
        下载走外网），被测服务主机名自动进 no_proxy，不污染父进程环境
     5. k>1 时追加 --repeats k 与 --dataset-args '{"<ds>": {"aggregation":
-       "mean_and_pass_at_k"}}'（每题采样 k 次，请求量 x k）
-    6. 每组每轮跑完即解析 reports/<model>/<ds>.json 的 mean 与 pass@1..k 并打印;
+       "mean_and_pass_at_k", "primary_metric": {"name": "accuracy",
+       "aggregation": "pass_at_k", "dimensions": {"k": k}}}}'（每题采样 k 次，
+       请求量 x k）; primary_metric 必须显式声明, 否则 evalscope 报告层判不出唯一
+       主指标会抛 ValueError（见 tools/passk_evalscope.py 头注释）
+    6. k>1 时入口换成 tools/passk_evalscope.py（dict 型 primary_metric 只有
+       该 wrapper 能解析; 原生 evalscope 二进制会 AttributeError）
+    7. --resume 时追加 --use-cache <work-dir> --rerun-review: 复用已有 predictions
+       只补缺样本, 重算判分/报告（命令变过时缓存身份哈希对不上, --rerun-review
+       必带; 见 README "断点续跑"）
+    8. --limit（冒烟: 每个子集只评 N 条）时 work-dir 加 _limit<N> 后缀, 与全量结果
+       隔开, 避免冒烟结果覆盖全量报告/污染 predictions 缓存
+    9. 每组每轮跑完即解析 reports/<model>/<ds>.json 的 mean 与 pass@1..k 并打印;
        全部结束后追加写 results/accuracy/scores.md，多轮同组打印均值
 """
 import argparse
@@ -69,6 +79,10 @@ GEN_TIMEOUT_MS = 3600000
 KNOWN_EVALSCOPE_BINS = [
     "/mnt/sfs_turbo/c00803992/tools/evalscope/venv311/bin/evalscope",
 ]
+
+# pass@k（k>1）专用的 evalscope 入口：原生二进制不认 dict 形式的 primary_metric，
+# 报告阶段会抛 ValueError（详见 tools/passk_evalscope.py 头注释）。
+PASSK_WRAPPER = os.path.join(KIT_ROOT, "tools", "passk_evalscope.py")
 
 
 def parse_dataset_line(line: str) -> dict:
@@ -150,26 +164,49 @@ def resolve_evalscope_bin(cfg: dict) -> str:
     return bin_path
 
 
-def tag_key(group: dict) -> str:
-    """结果行的分组 key: k>1 时带 _pass@k<k> 后缀。
+def resolve_python_exe(evalscope_bin: str) -> str:
+    """找出与 evalscope 同环境的 python 解释器（跑 tools/evalscope_passk_entry.py 用）。
+
+    evalscope_bin 可能是绝对路径（/path/to/venv/bin/evalscope）也可能是 PATH 上的
+    命令名。优先取同目录下的 python（venv / conda env 都符合这个布局），保证 wrapper
+    用的 site-packages 和 evalscope 是同一份；找不到就退回当前解释器 sys.executable。
+    """
+    resolved = evalscope_bin
+    if "/" not in resolved:
+        resolved = shutil.which(resolved) or resolved
+    cand = os.path.join(os.path.dirname(resolved), "python")
+    if os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
+    return sys.executable
+
+
+def tag_key(group: dict, limit: int = None) -> str:
+    """结果行的分组 key: k>1 时带 _pass@k<k> 后缀（--limit 冒烟时再加 _limit<N>）。
 
     与 work_dir_of 的目录名口径一致——否则 k=1 与 k=4 的同 tag 结果会被当成
     两轮混在一起算均值, 且实时表与 --report 表的 tag 对不上。
     """
     k = group.get("k", 1)
-    return f"{group['tag']}_pass@k{k}" if k > 1 else group["tag"]
+    key = f"{group['tag']}_pass@k{k}" if k > 1 else group["tag"]
+    return f"{key}_limit{limit}" if limit else key
 
 
-def work_dir_of(group: dict, rnd: int) -> str:
+def work_dir_of(group: dict, rnd: int, limit: int = None) -> str:
     """单组单轮 work-dir: results/accuracy/<tag>_r<N>
 
     k>1（pass@k 口径）时目录名带 _pass@k<k> 后缀，与单次 mean 口径的结果隔开，
     且 k 值写进目录名——不同 k 的结果不会互相覆盖/混用（evalscope 的 predictions
     是可复用的，同目录换 k 会污染结果）。--report 会把两种口径一起扫出来。
+
+    --limit（冒烟：每个子集只评 N 条）时再加 _limit<N> 后缀：冒烟结果与全量结果
+    必须分开存, 否则同一 work-dir 里的报告会被冒烟跑的 5 条结果覆盖掉全量结果。
     """
     k = group.get("k", 1)
     suffix = f"_pass@k{k}" if k > 1 else ""
+    if limit:
+        suffix += f"_limit{limit}"
     return os.path.join(ACC_DIR, f"{group['tag']}{suffix}_r{rnd}")
+
 
 
 def build_generation_config(group: dict) -> dict:
@@ -200,12 +237,25 @@ def build_dataset_args(group: dict) -> dict:
     evalscope 侧 dataset_args 会合并进 BenchmarkMeta（registry.py），aggregation
     是可覆盖字段；mean_and_pass_at_k 会同时产出 mean 与 pass@1..k 两类指标
     （evalscope metrics/aggregators/aggregators.py::MeanPassAtK）。
+
+    ⚠️ primary_metric 必须显式声明: 上面那 k+1 个 identity 全都叫 "accuracy"，
+    而 evalscope 报告层（metrics/semantics/primary.py::select_primary）在没有
+    显式声明时要求"有且仅有一个非诊断指标" → 5 个全算计分指标 → 歧义 →
+    ValueError → 报告 json 永不落盘 → 外部看到的是"结果文件缺失"。
+    声明成 dict 形式（带 aggregation + dimensions.k）由 tools/evalscope_passk_entry.py
+    转成 MetricSelector；原生 evalscope 二进制只收字符串，而字符串只按名字选，
+    5 个同名 identity 依然歧义 → 所以 k>1 必须走那个 wrapper 入口。
+
+    口径是 pass@k（不是 mean），所以主指标取 dimensions.k = k。
     """
-    return {ds: {"aggregation": "mean_and_pass_at_k"} for ds in group["datasets"]}
+    k = group.get("k", 1)
+    primary = {"name": "accuracy", "aggregation": "pass_at_k", "dimensions": {"k": k}}
+    return {ds: {"aggregation": "mean_and_pass_at_k", "primary_metric": primary}
+            for ds in group["datasets"]}
 
 
 def build_cmd(cfg: dict, group: dict, rnd: int, evalscope_bin: str,
-              limit: int = None) -> list:
+              limit: int = None, resume: bool = False) -> list:
     """构建单组单轮 evalscope eval 命令（宿主机直跑，不走 docker）"""
     svc = cfg["service"]
     api_key = (cfg.get("request") or {}).get("api_key") or "EMPTY"
@@ -221,14 +271,26 @@ def build_cmd(cfg: dict, group: dict, rnd: int, evalscope_bin: str,
         "--datasets", *group["datasets"],
         "--generation-config", json.dumps(build_generation_config(group)),
         "--eval-batch-size", str(group["batch_size"]),
-        "--work-dir", work_dir_of(group, rnd),
+        "--work-dir", work_dir_of(group, rnd, limit),
         "--no-timestamp",
     ]
     k = group.get("k", 1)
     if k > 1:
-        # pass@k: 每题重复采样 k 次, 并让 evalscope 按 mean_and_pass_at_k 聚合
+        # pass@k: 每题重复采样 k 次, 并让 evalscope 按 mean_and_pass_at_k 聚合。
+        # primary_metric 的 dict 需 wrapper 转 MetricSelector, 否则报告期必崩
+        # (见 build_dataset_args 注释), 因此 k>1 时切到 wrapper 入口。
         cmd += ["--repeats", str(k),
                 "--dataset-args", json.dumps(build_dataset_args(group))]
+        # wrapper 用与 evalscope 同一个解释器跑, 保证 site-packages 一致
+        # (wrapper 自带 shebang 指向别的环境时 import 的是另一份 evalscope)
+        cmd[0:1] = [resolve_python_exe(evalscope_bin), PASSK_WRAPPER]
+    if resume:
+        # 断点续跑: 复用 work-dir 里已有 predictions, 只补缺的样本并重算 review/报告
+        # (evalscope run.py: use_cache 即把 work_dir 指向该目录)。
+        # 必须带 --rerun-review: 命令一变(如补 primary_metric)缓存身份哈希就对不上,
+        # evalscope 会拒跑(ValueError: Cached evaluation identity does not match);
+        # rerun_review 只重算 review/聚合(规则判分, 秒级), 昂贵的 predictions 照旧复用
+        cmd += ["--use-cache", work_dir_of(group, rnd, limit), "--rerun-review"]
     if limit:  # 冒烟: 每个子集只评 limit 条
         cmd += ["--limit", str(limit)]
     return cmd
@@ -322,12 +384,17 @@ def effective_line(group: dict) -> str:
 
 
 def run_group_round(cfg: dict, group: dict, rnd: int, evalscope_bin: str,
-                    env, dry_run: bool, limit: int = None) -> tuple:
+                    env, dry_run: bool, limit: int = None,
+                    resume: bool = False) -> tuple:
     """执行单组单轮; 返回 (returncode, scores)。dry-run 只打印不执行。"""
     tag_r = f"{group['tag']}_r{rnd}"
-    work_dir = work_dir_of(group, rnd)
-    cmd = build_cmd(cfg, group, rnd, evalscope_bin, limit)
+    work_dir = work_dir_of(group, rnd, limit)
+    cmd = build_cmd(cfg, group, rnd, evalscope_bin, limit, resume)
     mode = f"pass@{group['k']}" if group.get("k", 1) > 1 else "mean"
+    if limit:
+        mode += f" / limit {limit}"
+    if resume:
+        mode += " / resume"
     print(f"\n{'=' * 70}\n[精度 {tag_r}]  {effective_line(group)}   (口径: {mode})")
     print("  命令: " + " ".join(shlex.quote(c) for c in cmd))
     print(f"  work-dir: {work_dir}")
@@ -462,6 +529,9 @@ def main():
                     help="每个子集只评 N 条（冒烟验证链路用; 不填=全量）")
     ap.add_argument("--k", type=int, default=None,
                     help="覆盖 pass@k 的采样次数 k（覆盖 config 里的 k; k=1 为单次 mean 口径）")
+    ap.add_argument("--resume", action="store_true",
+                    help="断点续跑: 复用 work-dir 已有 predictions/reviews, 只补缺样本并重出报告"
+                         "（崩溃恢复用, 例: 上次死在报告聚合阶段）")
     # 兼容位: run.sh 用 -f/--foreground 决定前台/nohup 分支后原样透传, 此处仅接收不生效
     ap.add_argument("-f", "--foreground", action="store_true",
                     help="前台运行（实际由 run.sh 处理, runner 侧仅为兼容接收）")
@@ -531,11 +601,11 @@ def main():
             done += 1
             print(f"\n>>> 进度 {done}/{total}")
             rc, scores = run_group_round(cfg, g, rnd, evalscope_bin, env, args.dry_run,
-                                         args.limit)
+                                         args.limit, args.resume)
             round_rows = []
             if scores:
                 for ds, v in scores.items():
-                    round_rows.append({"tag": tag_key(g), "rnd": rnd, "ds": ds,
+                    round_rows.append({"tag": tag_key(g, args.limit), "rnd": rnd, "ds": ds,
                                        "score": v["score"], "num": v["num"],
                                        "pass_at_k": v.get("pass_at_k") or {}})
             rows.extend(round_rows)
@@ -543,10 +613,10 @@ def main():
             if not args.dry_run and round_rows:
                 write_scores_md(round_rows)
             if rc != 0:
-                failed.append(f"{tag_key(g)}_r{rnd}")
+                failed.append(f"{tag_key(g, args.limit)}_r{rnd}")
             elif not any(r["score"] is not None for r in round_rows):
                 # 退出码 0 但没拿到分数 = 假通过（报告缺失/结构变了/指标为空）
-                no_score.append(f"{tag_key(g)}_r{rnd}")
+                no_score.append(f"{tag_key(g, args.limit)}_r{rnd}")
 
     print(f"\n{'=' * 70}")
     print(f"全部完成，总耗时 {(time.time() - t_start) / 60:.1f} 分钟")
