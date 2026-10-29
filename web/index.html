@@ -1314,13 +1314,16 @@ const RENDER={ config:renderConfig, cases:renderCases, projects:renderProjects,
 async function go(view){
   VIEW=view;
   if(view!=='projects') CURRENT_PROJECT=null;
+  /* 记到 URL hash: 刷新/分享链接后回到当前页签 */
+  if(('#'+view)!==location.hash) history.replaceState(null,'','#'+view);
   $$('#nav a').forEach(a=>a.classList.toggle('active', a.dataset.view===view));
   await RENDER[view]();
 }
 $$('#nav a').forEach(a=>a.onclick=()=>go(a.dataset.view));
 setInterval(()=>{ if(VIEW==='projects'&&CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); },5000);
 setInterval(()=>{ if(VIEW==='cases'){ const g=document.querySelector('[data-gen][disabled]'); if(g) renderCases(); } },3000);
-go('config');
+/* 刷新后恢复上次页签（hash 优先, 无 hash 落配置项） */
+go(RENDER[location.hash.slice(1)] ? location.hash.slice(1) : 'config');
 </script>
 </body>
 </html>
