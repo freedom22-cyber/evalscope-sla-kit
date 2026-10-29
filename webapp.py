@@ -931,10 +931,11 @@ def api_acc_set_config(payload: dict = Body(...)):
 def api_acc_run(payload: dict = Body(default={})):
     if _ACC_TASK.get("status") == "running":
         return JSONResponse({"ok": False, "error": "精度测试正在运行中"}, status_code=409)
-    # 用户直接选数据集 -> 动态构建组行写入 override
+    # 用户本次运行选的数据集只在内存生效（临时 YAML），不写 web_state——
+    # 否则会把整组配置覆盖成只剩本次选中的数据集，刷新后丢失其余数据集。
+    cfg, _ = effective_config()
     datasets = payload.get("datasets")
     if datasets and isinstance(datasets, list) and len(datasets) > 0:
-        st = load_state()
         k = payload.get("k") or 4
         rounds = payload.get("rounds") or 1
         effort = payload.get("effort") or "max"
@@ -942,11 +943,9 @@ def api_acc_run(payload: dict = Body(default={})):
         batch = payload.get("batch_size") or 32
         tag = "web_" + "_".join(datasets)
         line = f"{tag}, {' '.join(datasets)}, {rounds}, {effort}, {max_tokens}, {batch}, {k}"
-        st["accuracy_override"] = {"datasets": [line]}
-        save_state(st)
-    # 把 effective_config（含 override）写成临时 YAML，确保 accuracy_runner 读到的是
-    # 页面配置而非 config.yaml 原值
-    cfg, _ = effective_config()
+        # 仅覆盖本次运行用的 cfg 副本，不落 web_state
+        cfg.setdefault("accuracy", {})["datasets"] = [line]
+    # 把本次运行的 cfg 写成临时 YAML，确保 accuracy_runner 读到的是本次选择
     import tempfile, yaml as _yaml
     tmp_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False,
                                           dir=KIT_ROOT, encoding="utf-8")
