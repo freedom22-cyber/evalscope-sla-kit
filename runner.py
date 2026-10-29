@@ -46,6 +46,17 @@ RESULTS_DIR = os.path.join(KIT_ROOT, "results")
 LOGS_DIR = os.path.join(KIT_ROOT, "logs")
 TOOL_DIR = os.path.join(KIT_ROOT, "tools")
 
+
+def datasets_subdir(cfg: dict, sc: dict) -> str:
+    """按用例数据集类型返回实际存放目录。
+
+    random 用独立子目录 datasets/random/——与 gsm8k 的 datasets/ 隔离，
+    避免同长度同参数指向同一文件互相复用混淆，且便于用户查看。
+    """
+    sub = os.path.join(DATASETS_DIR, "random") if sc.get("dataset") == "random" else DATASETS_DIR
+    os.makedirs(sub, exist_ok=True)
+    return sub
+
 # evalscope 对 custom 数据集的 prompt 过滤阈值 = input_len + 模板开销(~2000)
 PROMPT_FILTER_MARGIN = 2000
 
@@ -194,20 +205,37 @@ def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
     hit = sc["hit_rate"]
     pnum = sc.get("prefix_num") or cfg.get("dataset", {}).get("gsm8k_prefix_num", 1)
     pnum_s = f"-pN{pnum}" if pnum and int(pnum) > 1 else ""
+    # 前缀前缀: random 用 RANDOM- 前缀且放 datasets/random/ 子目录，与 gsm8k 隔离
+    is_random = sc.get("dataset") == "random"
+    tag = "RANDOM-" if is_random else "GSM8K-"
+    base_dir = datasets_subdir(cfg, sc)
     if hit == 0:
-        jsonl = os.path.join(DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}{pnum_s}.jsonl")
+        jsonl = os.path.join(base_dir, f"{tag}in{in_len}-num{n}-{tok_name}{pnum_s}.jsonl")
     else:
         rr = hit if hit < 1 else 1
         jsonl = os.path.join(
-            DATASETS_DIR, f"GSM8K-in{in_len}-num{n}-{tok_name}{pnum_s}-repeatRate{rr}.jsonl")
+            base_dir, f"{tag}in{in_len}-num{n}-{tok_name}{pnum_s}-repeatRate{rr}.jsonl")
     prompts = jsonl.rsplit(".", 1)[0] + ".prompts.txt"
     return jsonl, prompts
 
 
+def _gen_dataset_filename(tok_name, in_len, number, hit, hit_len, pnum, dp):
+    """复现 tools/generate_dataset.py 的落盘文件名（生成后据此重命名到规范路径）。"""
+    if hit == 0:
+        return f"GSM8K-in{in_len}-num{number}-{tok_name}.jsonl"
+    rr = hit if hit < 1 else 1
+    if rr >= 1:
+        return f"GSM8K-in{hit_len}-num{dp * pnum}-{tok_name}-repeatRate{rr}.jsonl"
+    return f"GSM8K-in{in_len}-num{number}-{tok_name}-repeatRate{rr}.jsonl"
+
+
 def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False,
                          force: bool = False, log_handle=None) -> str:
-    """确保 gsm8k 数据集存在，返回 prompts.txt 路径。不存在则生成。
+    """确保数据集存在，返回 prompts.txt 路径。不存在则生成。
 
+    random / gsm8k 都走 gen_dataset 脚本生成定长数据；random 落 datasets/random/
+    并用 RANDOM- 前缀，与 gsm8k 隔离。生成后按规范命名重命名（脚本固定命名
+    含 GSM8K- 前缀、无 pN/RANDOM 段）。
     force=True 或 cfg dataset.force_regenerate 时强制重新生成。
     log_handle 传入文件对象时，子进程输出重定向到该文件（Web UI 用）。
     """
@@ -219,18 +247,26 @@ def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False,
         return prompts_path
 
     ds_cfg = cfg["dataset"]
+    base_dir = datasets_subdir(cfg, sc)
+    tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
+    n = dataset_number(cfg, sc)
+    hit = sc["hit_rate"]
+    pnum = int(sc["prefix_num"] or ds_cfg.get("gsm8k_prefix_num", 1))
+    dp = int(ds_cfg["gsm8k_dp"])
+    hit_len = int(sc["input_len"] * hit)
+
     cmd = [
         sys.executable, os.path.join(TOOL_DIR, "gen_dataset_only.py"),
         "--tokenizer_path", cfg["service"]["tokenizer_path"],
         "--input_len", str(sc["input_len"]),
-        "--number", str(dataset_number(cfg, sc)),
-        "--save_path", DATASETS_DIR,
+        "--number", str(n),
+        "--save_path", base_dir,
         "--seed", str(ds_cfg["gsm8k_seed"]),
-        "--prefix_num", str(sc["prefix_num"] or ds_cfg.get("gsm8k_prefix_num", 1)),
-        "--dp", str(ds_cfg["gsm8k_dp"]),
+        "--prefix_num", str(pnum),
+        "--dp", str(dp),
     ]
-    if sc["hit_rate"] > 0:
-        cmd += ["--prefix_flag", "1", "--repeat_rate", str(sc["hit_rate"])]
+    if hit > 0:
+        cmd += ["--prefix_flag", "1", "--repeat_rate", str(hit)]
     if ds_cfg.get("force_regenerate") or force:
         cmd.append("--force_regenerate")
     print(f"    生成数据集: {os.path.basename(jsonl_path)}")
@@ -238,8 +274,23 @@ def ensure_gsm8k_dataset(cfg: dict, sc: dict, dry_run: bool = False,
     r = subprocess.run(cmd, cwd=TOOL_DIR, stdout=log_handle, stderr=subprocess.STDOUT)
     if r.returncode != 0:
         raise RuntimeError(f"数据集生成失败: {' '.join(cmd)}")
+
+    # 脚本按固定命名落盘（在 base_dir），重命名到规范路径（RANDOM-/pN 隔离）
+    gen_name = _gen_dataset_filename(tok_name, sc["input_len"], n, hit, hit_len, pnum, dp)
+    gen_path = os.path.join(base_dir, gen_name)
+    if os.path.exists(gen_path) and os.path.abspath(gen_path) != os.path.abspath(jsonl_path):
+        os.replace(gen_path, jsonl_path)
+    if os.path.exists(gen_path):  # 规范化路径与生成路径一致时
+        jsonl_path = gen_path
     if not os.path.exists(jsonl_path):
-        raise RuntimeError(f"数据集生成后未找到: {jsonl_path}")
+        raise RuntimeError(f"数据集生成后未找到: {jsonl_path}（脚本输出 {gen_path}）")
+
+    # 前缀数据集（hit>0）也重命名到规范路径
+    if hit > 0:
+        gen_prefix = os.path.join(base_dir, f"prefix-GSM8K-in{hit_len}-num{dp * pnum}-{tok_name}.jsonl")
+        want_prefix_jsonl = prefix_jsonl_path(cfg, sc)
+        if os.path.exists(gen_prefix) and os.path.abspath(gen_prefix) != os.path.abspath(want_prefix_jsonl):
+            os.replace(gen_prefix, want_prefix_jsonl)
 
     # jsonl -> 纯文本 prompts（evalscope custom 插件要求）
     r = subprocess.run([sys.executable, os.path.join(TOOL_DIR, "jsonl_to_prompts.py"), jsonl_path],
@@ -551,21 +602,24 @@ def random_dataset_paths(cfg: dict, sc: dict) -> tuple:
     return gsm8k_dataset_paths(cfg, sc)
 
 
-def prefix_prompts_path(cfg: dict, sc: dict) -> str:
-    """前缀数据集的 prompts 路径（prefix-*.jsonl 转出的纯文本）。
-
-    generate_dataset.py 生成前缀数据集时同时落 prefix-GSM8K-in{prefix_len}-...jsonl；
-    前缀预热用它（把前缀灌进 KV cache）。
-    """
+def prefix_jsonl_path(cfg: dict, sc: dict) -> str:
+    """前缀数据集的 jsonl 路径（generate_dataset.py 落盘后重命名到此）。"""
     tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
     in_len = sc["input_len"]
     hit = sc["hit_rate"]
     pnum = sc.get("prefix_num") or cfg.get("dataset", {}).get("gsm8k_prefix_num", 1)
     dp = cfg.get("dataset", {}).get("gsm8k_dp", 1)
     prefix_len = int(in_len * hit)
-    jsonl = os.path.join(DATASETS_DIR,
-                         f"prefix-GSM8K-in{prefix_len}-num{dp * pnum}-{tok_name}.jsonl")
-    return jsonl.rsplit(".", 1)[0] + ".prompts.txt"
+    base_dir = datasets_subdir(cfg, sc)
+    return os.path.join(base_dir, f"prefix-GSM8K-in{prefix_len}-num{dp * pnum}-{tok_name}.jsonl")
+
+
+def prefix_prompts_path(cfg: dict, sc: dict) -> str:
+    """前缀数据集的 prompts 路径（prefix-*.jsonl 转出的纯文本）。
+
+    前缀预热用它（把前缀灌进 KV cache）。
+    """
+    return prefix_jsonl_path(cfg, sc).rsplit(".", 1)[0] + ".prompts.txt"
 
 
 def ensure_prefix_prompts(cfg: dict, sc: dict, log_handle=None) -> str:
@@ -574,14 +628,7 @@ def ensure_prefix_prompts(cfg: dict, sc: dict, log_handle=None) -> str:
     if os.path.exists(prompts):
         return prompts
     # 从 jsonl 转
-    tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
-    in_len = sc["input_len"]
-    hit = sc["hit_rate"]
-    pnum = sc.get("prefix_num") or cfg.get("dataset", {}).get("gsm8k_prefix_num", 1)
-    dp = cfg.get("dataset", {}).get("gsm8k_dp", 1)
-    prefix_len = int(in_len * hit)
-    jsonl = os.path.join(DATASETS_DIR,
-                         f"prefix-GSM8K-in{prefix_len}-num{dp * pnum}-{tok_name}.jsonl")
+    jsonl = prefix_jsonl_path(cfg, sc)
     if not os.path.exists(jsonl):
         return None
     r = subprocess.run([sys.executable, os.path.join(TOOL_DIR, "jsonl_to_prompts.py"), jsonl],
