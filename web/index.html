@@ -653,8 +653,9 @@ async function newProject(){
   const nameInp=el('input',{type:'text',id:'np-name',style:'width:100%',placeholder:'如 摸高回归-1027'});
   body.append(nameInp);
   body.append(el('h3',{style:'font-size:13px;margin:16px 0 8px;color:#fff'},'选择要执行的测试用例'));
-  /* 用例搜索：过滤复选框行（隐藏行勾选状态保留，不影响提交） */
-  const ps=el('input',{type:'text',placeholder:'搜索用例…',
+  /* 用例搜索：搜索即收窄选择范围——不匹配行自动取消勾选（所见即所选），
+     避免隐藏行仍带勾选导致创建的工程包含全部用例 */
+  const ps=el('input',{type:'text',placeholder:'搜索用例…（搜索后仅保留匹配项勾选）',
     style:'width:100%;margin-bottom:8px;padding:9px 13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;background:rgba(15,23,42,.6);color:var(--fg);font-family:inherit'});
   const list=el('div',{style:'max-height:360px;overflow:auto;border:1px solid var(--glass-line);border-radius:10px;padding:8px'});
   cases.forEach(c=>{
@@ -665,17 +666,27 @@ async function newProject(){
     row.dataset.search=(c.id+' '+c.dataset+' '+kfmt(c.input_len)+' '+kfmt(c.output_len)).toLowerCase();
     list.append(row);
   });
+  const selCount=el('span',{cls:'hint',style:'font-size:11px;color:var(--fg-mute);margin-left:10px'});
+  function updateSelCount(){
+    const n=$$('input[type=checkbox]:checked',list).length;
+    selCount.textContent='已选 '+n+' / '+cases.length+' 个用例';
+  }
+  list.addEventListener('change',updateSelCount);
   ps.addEventListener('input',()=>{
     const q=ps.value.trim().toLowerCase();
     $$('label',list).forEach(row=>{
-      row.style.display=(!q||row.dataset.search.includes(q))?'':'none';
+      const match=!q||row.dataset.search.includes(q);
+      row.style.display=match?'':'none';
+      if(q&&!match) row.querySelector('input[type=checkbox]').checked=false;
     });
+    updateSelCount();
   });
   body.append(ps);
   body.append(list);
   const selBar=el('div',{cls:'row-actions',style:'margin-top:8px'});
-  selBar.append(btn('全选','check','small',()=>$$('input[type=checkbox]',list).forEach(x=>x.checked=true)));
-  selBar.append(btn('全不选','refresh','small',()=>$$('input[type=checkbox]',list).forEach(x=>x.checked=false)));
+  selBar.append(btn('全选（可见）','check','small',()=>$$('label',list).filter(r=>r.style.display!=='none').forEach(r=>r.querySelector('input[type=checkbox]').checked=true)));
+  selBar.append(btn('全不选（可见）','refresh','small',()=>$$('label',list).filter(r=>r.style.display!=='none').forEach(r=>r.querySelector('input[type=checkbox]').checked=false)));
+  selBar.append(selCount);
   body.append(selBar);
   const ops=el('div',{cls:'row-actions',style:'margin-top:16px'});
   ops.append(btn('创建','plus','primary',async()=>{
