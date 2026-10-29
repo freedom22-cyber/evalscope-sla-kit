@@ -92,8 +92,6 @@ def parse_scenario(line: str) -> dict:
     if dset not in ("random", "gsm8k"):
         raise ValueError(f"数据集类型必须是 random/gsm8k: {line!r}")
     hit_rate = parse_hit_rate(hit)
-    if dset == "random" and hit_rate != 0:
-        raise ValueError(f"random 数据集不支持缓存命中率: {line!r}")
     sc = {
         "dataset": dset,
         "input_len": parse_len(in_len),
