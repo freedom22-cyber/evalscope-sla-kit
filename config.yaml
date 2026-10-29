@@ -19,6 +19,9 @@ service:
   # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
   # 对应权重 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx）
   tokenizer_path: /home/hhc/model/GLM-5.3-w4a4c4-mxfp4-0902
+  # 服务上下文上限（agentx 回放传 --max-context-length, 超长 trace 会先被过滤,
+  # 避免打到服务端 400; 不设置则不传。glm5.3 端点 max_model_len=204800）
+  max_context_length: 204800
 
 request:
   # 是否在请求头中加 Host 参数（经过 LB/代理/网关按域名路由时需要）
@@ -172,13 +175,22 @@ accuracy:
 #       python3 agentx_runner.py --list / --dry-run / --only 256k
 # 数据集变体（HuggingFace semianalysisai/cc-traces-weka-*）:
 #   full  1M ctx, 135k 请求 | 256k  256k ctx, 68k 请求（推荐, 兼容小上下文）
+# 本地裁剪语料（local:<目录>）: 先用 tools/curate_weka_traces.py 从 traces.jsonl
+#   生成, 80 会话 x 8 轮 x ~65k 输入 x ~80% 缓存命中（glm5.3 实测 810 请求:
+#   ISL p50 65.4k, 理论前缀命中 77.75%; 自动固定 mvp 场景/无预热/封顶重放,
+#   详见 agentx_runner.py 头部说明）
 # ============================================================================
 agentx:
   datasets:
-    # "tag, public_dataset, concurrency [, tokenizer]"
+    # "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"
     # tokenizer 留空 = 用 service.tokenizer_path（本地路径）
     - "256k, semianalysis_cc_traces_weka_with_subagents_256k, 16"
     # - "full, semianalysis_cc_traces_weka_062126, 16"
+    # 生成: python3 tools/curate_weka_traces.py \
+    #         --src <HF快照>/traces.jsonl --out-dir datasets/weka8 \
+    #         --main-turns 8 --sessions 80 --target-isl 65000 --target-hit 0.80 \
+    #         --max-context 204800 --idle-cap 300
+    # - "weka8, local:datasets/weka8, 80"
 
 # ============================================================================
 # 功能测试（scripts/run_api_e2e.py, Simaas 风格 API E2E 框架）

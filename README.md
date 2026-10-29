@@ -3,13 +3,14 @@
 对 OpenAI 兼容推理服务（vLLM / MindIE / 路由网关等）做 **evalscope 摸高测试**：
 `--sla-auto-tune` 二分搜索满足 SLA 判据（TTFT / TPOT）的**最大并发数**。
 
-三条测试线，共用一份 `config.yaml`，统一通过 Web 控制台或命令行驱动：
+四条测试线，共用一份 `config.yaml`，统一通过 Web 控制台或命令行驱动：
 
 | 测试线 | 入口 | 产出 |
 |---|---|---|
 | 摸高（性能） | `bash run.sh` | `results/<场景ID>/…/sla_summary.json` + `report.py` 汇总表 |
 | 精度（pass@k） | `bash run.sh --accuracy` | `results/accuracy/<tag>_pass@k<k>_r<N>/…` + `scores.md` |
 | 功能（API E2E） | `bash run.sh --functional` | `results/functional/e2e_<时间戳>/report.md` + 各用例响应原文 |
+| 智能体回放（AgentX） | `bash run.sh --agentx` | `results/agentx/<tag>_<时间戳>/…`（summary/metrics json + 关键指标打印） |
 
 ## 目录结构
 
@@ -20,13 +21,14 @@ evalscope_sla_kit/
 ├── config.yaml         # 全部配置：服务地址、模型名、Host 头、场景清单、精度数据集组、功能参数
 ├── runner.py           # 摸高: 场景解析 + 数据集生成 + evalscope 命令构建执行
 ├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + pass@k/mean 分数解析汇总
+├── agentx_runner.py    # AgentX: 智能体回放（cc-traces 公共语料 / local:<目录> 本地裁剪语料）
 ├── scripts/run_api_e2e.py  # 功能测试: API E2E 框架（22 条用例，PASS/WARN/FAIL/SKIP）
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI，端口 8300）
 ├── web/index.html      # Web 控制台前端（五页签单页应用，深色玻璃拟态）
-├── tools/              # gsm8k 数据集生成 / jsonl→prompts / 守护脚本
-├── datasets/           # 生成的数据集（按文件名复用）
-├── results/            # 摸高 + 精度 + 功能 输出
+├── tools/              # gsm8k 数据集生成 / jsonl→prompts / weka 裁剪 / 守护脚本
+├── datasets/           # 生成的数据集（按文件名复用；weka 本地语料也放这里）
+├── results/            # 摸高 + 精度 + 功能 + AgentX 输出
 └── logs/               # 运行日志
 ```
 
@@ -250,6 +252,93 @@ python3 scripts/run_api_e2e.py --only F-03      # 只跑指定用例
 | WARN | 已知缺陷 / 可接受异常 | 否 |
 | SKIP | 主动跳过 | 否 |
 
+## AgentX 智能体回放（agentx_runner.py）
+
+用 agentx-harness 回放 SemiAnalysis 公开的 Claude Code 真实会话 trace
+（393 个智能体编码会话：多轮、子智能体、前缀复用 / KV cache 命中模式），
+测**真实智能体工作负载**下的性能（TTFT / 吞吐 / 缓存命中），不是精度。
+**宿主机直跑**（setup.sh 已装 agentx-harness）。
+
+```bash
+bash run.sh --agentx                      # 后台跑所有启用变体（日志 logs/agentx_*.log）
+bash run.sh --agentx -f                   # 前台跑
+bash run.sh --agentx -f --only weka8      # 前台只跑指定变体
+python3 agentx_runner.py --list           # 列出启用变体
+python3 agentx_runner.py --dry-run        # 只打印 agentx 命令不执行
+python3 agentx_runner.py --concurrency 80 # 覆盖并发会话数（覆盖 config）
+```
+
+### config.yaml agentx 段
+
+```
+"tag, public_dataset | local:<目录>, concurrency [, tokenizer]"
+```
+
+| 字段 | 说明 |
+|---|---|
+| `tag` | 变体名（`--only` / 结果目录名用） |
+| `public_dataset` | HuggingFace 公共语料（agentx 自动下载），或 `local:<目录>` 本地裁剪语料 |
+| `concurrency` | 并发会话数（= 回放车道数） |
+| `tokenizer` |（可选）行内 tokenizer（HF 名，自动带 `--tokenizer-trust-remote-code`）；留空 = `service.tokenizer_path` |
+
+公共语料变体（HuggingFace `semianalysisai/cc-traces-weka-*`）：
+`full`（1M ctx，135k 请求）/ `256k`（256k ctx，68k 请求，兼容小上下文，推荐）。
+
+### 本地裁剪语料（cc-traces-weka-062126）
+
+公共语料是全量回放（数十万请求）；要测特定画像（如 80 会话 × 8 轮 × 平均
+输入 65k × 缓存命中 80%），先用裁剪工具从 HF 快照生成 `local:<目录>` 语料：
+
+```bash
+# 快照路径: hf_cache 里 datasets--semianalysisai--cc-traces-weka-062126/snapshots/*/traces.jsonl
+python3 tools/curate_weka_traces.py \
+    --src <HF快照>/traces.jsonl --out-dir datasets/weka8 \
+    --main-turns 8 --sessions 80 --target-isl 65000 --target-hit 0.80 \
+    --max-context 204800 --idle-cap 300
+# 输出: datasets/weka8/<会话id>.json（每会话一个文件）
+#       datasets/weka8_stats.json（汇总; total_requests = 回放 request-count 上限）
+```
+
+然后取消 config.yaml agentx 段的注释并开跑：
+
+```yaml
+- "weka8, local:datasets/weka8, 80"
+```
+
+```bash
+bash run.sh --agentx -f --only weka8
+```
+
+裁剪算法（确定性、可复现）：每会话只保留前 N 个主轮次（窗口内派生的子
+智能体会话整体保留），按「平均输入长度 / 理论前缀缓存命中率」最接近目标
+值打分选出 M 个会话，超上下文上限的先剔除。glm5.3（204.8k ctx）实测：
+
+- 810 请求全部成功（640 主轮 + 170 子智能体），0 失败
+- ISL p50 65.4k（= 目标 65k）；理论前缀缓存命中 77.75%（hash_ids 差集推得）
+- 结果目录 `results/agentx/weka8_<时间戳>/`
+
+### local: 变体的固定回放参数（为什么和公共语料不同）
+
+`local:` 语料会被 runner 固定成一组和公共语料不同的 agentx 参数（写死在
+`build_cmd`，不能从 config 覆盖）—— 都是实测踩出来的坑：
+
+| 参数 | 原因 |
+|---|---|
+| `--scenario inferencex-agentx-mvp` | 默认 `agentx` 场景注入 `warmup_requests_per_lane=10` 加速预热，但预热**真实消耗回放轮次**：8 轮短语料直接被吃光；且 80 并发预热 = ~80 条零间隔大 prefill 同时打出，排队网关（如 ModelArts）会杀掉排队超时请求，单条失败即整体中止 |
+| `--unsafe-override` | 本地目录不是场景锁校验的 pinned 公共语料，必须显式 override（聚合结果标记 `submission_valid=false`，不影响指标） |
+| `--request-count <stats 的 total_requests>` | 车道跑完短会话会**回收重放**（循环消费语料），把裁剪窗口外的轮次挤进来；用裁剪总量封顶 |
+| `--trajectory-start-min/max-ratio 0` | 预设 0.25~0.75 随机起点会跳过短语料的大部分轮次，固定从第 0 轮回放整个裁剪窗口 |
+| `--concurrency-ramp-duration 120` | 不传时全部车道 t=0 同时派发第 0 轮（~N 条全新 65k prefill 同时打到排队网关，同预热坑）；120s 斜坡错开起步 |
+| `--benchmark-duration 3600` | 回放时长上限；weka8 实测 ~11 分钟（最长会话 987s），3600 留慢端点余量（mvp 场景不传时自动填 1800） |
+| `--trace-idle-gap-cap-seconds 300` | 与裁剪 `--idle-cap` 对齐：轮间超长空档（人走了）压缩到 300s，否则回放时长被空闲时间主导 |
+| `--max-context-length` | 取 `service.max_context_length`（可选）：超长 trace 在客户端先过滤，避免打服务端 400 |
+
+`--random-seed 42` / `--failed-request-threshold 0.10` / `--use-server-token-count`
+与原 `agentx` 场景预设一致，mvp 场景不注入，显式补齐。
+
+> 中途终止用 Ctrl-C（SIGINT）：aiperf 收到 SIGINT 后优雅取消并落盘已完成的
+> 请求，指标仍可解析。
+
 ## config.yaml 说明
 
 ### service / request 段
@@ -259,6 +348,7 @@ python3 scripts/run_api_e2e.py --only F-03      # 只跑指定用例
 | `service.url` | 被测端点，完整 chat completions 路径 |
 | `service.model` | 服务端 served model 名 |
 | `service.tokenizer_path` | 模型权重路径（tokenizer）：**必须本机存在**，不存在时 modelscope 会退化成远程下载 → 404 |
+| `service.max_context_length` |（可选）服务上下文上限；AgentX 回放转成 `--max-context-length` 在客户端过滤超长 trace，不设置则不传 |
 | `request.add_host_header` | true = 请求头加 Host（LB/网关按域名路由时用） |
 | `request.host_header` | Host 值，留空自动取 url 主机名 |
 | `request.api_key` | 设置后自动加 `Authorization: Bearer ***` |
@@ -344,6 +434,7 @@ bash run.sh --gen-datasets            # 批量预生成所有 gsm8k 数据集
 |---|---|
 | `tools/gen_dataset_only.py` / `tools/generate_dataset.py` | gsm8k 定长数据集生成（aisbench） |
 | `tools/jsonl_to_prompts.py` | jsonl → 纯文本 prompts.txt |
+| `tools/curate_weka_traces.py` | cc-traces-weka 本地裁剪语料生成（目标画像: 会话数 / 主轮数 / 平均输入 / 缓存命中；输出每会话一个 JSON + `<目录>_stats.json`，AgentX `local:<目录>` 变体回放） |
 | `tools/data_picker.py` | 数据集挑选 |
 | `tools/f05_claude_code.sh` | F-05 claude code CLI 会话（问答 + 工具调用）自动化；`functional_runner.py` 里的 F-05 只做存在性检查（恒 SKIP），真会话跑这个脚本 |
 | `tools/passk_evalscope.py` | evalscope CLI wrapper：把 `--dataset-args` 里 JSON dict 形式的 `primary_metric` 转成 `MetricSelector` 对象（pass@k 报告期必需，否则 no-unique-primary-metric 必崩；k>1 时 runner 自动切到它） |
