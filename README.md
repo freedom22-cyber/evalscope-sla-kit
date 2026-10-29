@@ -193,6 +193,8 @@ bash run.sh --accuracy --resume                          # 等价（参数透传
   旧预测会被静默混进新报告。换口径请换 tag（新 work-dir）。
 - `tools/wait_service_passk.sh` 检测到 work-dir 已有 predictions 时自动加
   `--resume`：服务闪断 → 守护等待恢复 → 断点续跑，全程不需要人工记命令。
+- `tools/supervise_passk.sh` 把"拉起"也自动化：评测崩了（503 闪断 / 进程被杀）
+  就等服务恢复自动 `--resume` 续跑，直到报告全出才退出，适合深夜长跑。
 
 ### reasoning_effort 已知缺陷
 
@@ -349,8 +351,9 @@ bash run.sh --gen-datasets            # 批量预生成所有 gsm8k 数据集
 | `tools/passk_evalscope.py` | evalscope CLI wrapper：把 `--dataset-args` 里 JSON dict 形式的 `primary_metric` 转成 `MetricSelector` 对象（pass@k 报告期必需，否则 no-unique-primary-metric 必崩；k>1 时 runner 自动切到它） |
 | `tools/wait_service_passk.sh` | 守护：等 ModelArts 服务恢复健康后自动启动 pass@k 评测（健康判定走 `/v1/models` + 极小流式对话，**curl 一律 `--noproxy '*'`**）；work-dir 已有 predictions 时自动带 `--resume` 断点续跑 |
 | `tools/queue_passk.sh` | 守护：等前序精度评测退出后自动启动 pass@k 评测（等"没有精度进程在跑"，不是等写死的 PID） |
+| `tools/supervise_passk.sh` | 监督守护：跑起来之后**全程盯**——服务闪断 503 / 进程被杀（OOM）后自动等恢复再 `--resume` 续跑，直到全部数据集报告生成才退出（完成判定查报告文件，能逮住 runner 退出码 0 但报告缺失的假通过） |
 
-两个守护脚本都用锁目录防双跑，地址/模型从 `config.yaml` 的 `service` 段读，
+三个守护脚本都用锁目录防双跑，地址/模型从 `config.yaml` 的 `service` 段读，
 不写死在脚本里。
 
 ```bash
@@ -405,3 +408,9 @@ setsid nohup bash tools/wait_service_passk.sh > logs/acc_passk_queue.log 2>&1 &
     换口径续跑会把旧预测静默混进新报告——换口径请换 tag。
 18. **停止任务需杀进程树**：`killpg(SIGKILL)` 整组杀，`proc.kill()` 只杀直接
     子进程不够（evalscope 还会派生 worker）。
+19. **服务闪断 503 会让评测"猝死"**：与压测共享同一 ModelArts 服务时后端可能
+    临时 `backend is not available`（503），evalscope 只快速重试 5 次（秒级）就
+    抛异常退出，没人拉起就损失墙钟时间。解法 = `tools/supervise_passk.sh`
+    监督守护：崩了等恢复自动 `--resume`，直到报告全出。本机还有 OOM 风险
+    （7.2G 内存无 swap 时 evalscope 峰值 ~2.5G 会被内核杀，-9 退出码即此；
+    已加 8G /swapfile 兜底）。
