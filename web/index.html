@@ -479,16 +479,17 @@ async function renderCases(){
     const genSt=c.dataset_gen_status||'idle', genErr=c.dataset_gen_error;
     const isGen=genSt==='generating';
     const genLabel=isGen?'生成中…':(c.dataset_exists?'重新生成':'生成');
-    const dsCell=(c.dataset==='gsm8k')
+    const hasDs=c.dataset==='gsm8k'||c.dataset==='random';
+    const dsCell=hasDs
       ? ('<span class="mono">'+(c.dataset_num||'默认')+'</span> <button class="small" data-gen="'+c.id+'"'+(isGen?' disabled':'')+'>'+genLabel+'</button>')
       : '<span class="muted">—</span>';
     let stCell;
-    if(c.dataset==='gsm8k'){
+    if(hasDs){
       if(isGen) stCell='<span class="pill running">生成中</span>';
       else if(genSt==='error') stCell='<span class="pill error" title="'+esc(genErr||'')+'">生成失败</span>';
       else if(c.dataset_exists) stCell='<span class="pill done">已生成</span>'+(c.dataset_shared?' <span class="muted">复用</span>':'');
       else stCell='<span class="pill not_started">未生成</span>';
-    } else stCell='<span class="muted">在线生成</span>';
+    } else stCell='<span class="muted">—</span>';
     tr.innerHTML=
       '<td><input type="checkbox" class="en" '+(c.enabled!==false?'checked':'')+'></td>'
       +'<td><code>'+esc(c.id)+'</code></td>'

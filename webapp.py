@@ -187,12 +187,15 @@ def _result_of(case_id):
 
 # --------------------------------------------------------- data pipeline ---
 def dataset_status(cfg, st):
-    """返回每个 gsm8k 用例的数据集状态（含复用信息）。"""
+    """返回每个用例（gsm8k + random）的数据集状态（含复用信息）。
+
+    random 现在也用 gen_dataset 脚本本地生成定长数据集，与 gsm8k 同链路。
+    """
     cases = get_cases(st)
     seen = {}
     out = []
     for c in cases:
-        if c.get("dataset") != "gsm8k":
+        if c.get("dataset") not in ("gsm8k", "random"):
             continue
         jsonl, prompts = runner.gsm8k_dataset_paths(cfg, c)
         key = os.path.basename(prompts)
@@ -469,8 +472,9 @@ def api_datasets():
 
 @app.post("/api/datasets/generate")
 def api_datasets_generate(payload: dict = Body(default={})):
-    """生成数据集：payload.case_ids=指定用例；否则生成所有未生成的 gsm8k 用例。
+    """生成数据集：payload.case_ids=指定用例；否则生成所有未生成的 gsm8k/random 用例。
 
+    random 与 gsm8k 同链路（gen_dataset 脚本本地生成定长数据）。
     生成状态追踪在 _GEN_TASKS[case_id] 中，前端据此禁用按钮。
     """
     cfg, st = effective_config()
@@ -479,7 +483,7 @@ def api_datasets_generate(payload: dict = Body(default={})):
     cases = get_cases(st)
     todo = {}
     for c in cases:
-        if c.get("dataset") != "gsm8k":
+        if c.get("dataset") not in ("gsm8k", "random"):
             continue
         if case_ids is not None and c["id"] not in case_ids:
             continue
