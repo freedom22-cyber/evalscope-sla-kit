@@ -274,6 +274,8 @@ const el = (t, a={}, ...kids) => {
     if (k === 'html') e.innerHTML = a[k];
     else if (k === 'cls') e.className = a[k];
     else if (k === 'style') e.setAttribute('style', a[k]);
+    else if (k === 'checked') e.checked = !!a[k];   // setAttribute('checked',false) 仍是勾选态
+    else if (k === 'disabled') e.disabled = !!a[k];
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), a[k]);
     else e.setAttribute(k, a[k]);
   }
@@ -284,14 +286,21 @@ function btn(label, ic, cls, onclick){ return el('button',{cls:cls||'',onclick},
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),3000); }
 async function api(path, opts={}){
-  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
-  return await r.json();
+  let r;
+  try { r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}); }
+  catch(e) { return {ok:false, error:'网络错误: '+e.message}; }
+  const text = await r.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; }
+  catch(e) { return {ok:false, error:'服务端返回非 JSON (HTTP '+r.status+')'}; }
+  if(!r.ok && data && data.ok===undefined) data.ok = false;
+  return data;
 }
 const STATUS_CN = { done:'已完成', running:'进行中', pending:'排队中', error:'失败',
   not_started:'未开始', stopped:'已停止', interrupted:'已中断' };
 function pill(s){ return '<span class="pill '+(s||'not_started')+'">'+(STATUS_CN[s]||s||'未开始')+'</span>'; }
-const kfmt = n => (n && n % 1024 === 0) ? (n/1024)+'k' : n;
-const hitfmt = h => (h===0||h==null) ? '0%' : (h*100).toFixed(0)+'%';
+const kfmt = n => (n==null) ? '-' : ((n && n % 1024 === 0) ? (n/1024)+'k' : n);
+const hitfmt = h => (h==null) ? '-' : (h===0 ? '0%' : (h*100).toFixed(0)+'%');
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ---- SVG bar chart (dark) ---- */
@@ -333,10 +342,22 @@ function exportCSV(rows, filename){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename;
   a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
+/* 跨浏览器日期解析: "YYYY-MM-DD HH:MM:SS" 在 Safari 上 new Date 会 NaN,
+   统一把空格换 T（也兼容 ISO 带 millis 的）*/
+function parseDate(s){
+  if(!s) return null;
+  if(s instanceof Date) return s;
+  const norm = String(s).trim().replace(' ', 'T');
+  let d = new Date(norm);
+  if(isNaN(d)) d = new Date(String(s));   // 兜底
+  return isNaN(d) ? null : d;
+}
 function elapsed(started, finished){
   if(!started) return '';
-  const end=finished?new Date(finished):new Date();
-  const s=Math.round((end-new Date(started))/1000);
+  const sd = parseDate(started); if(!sd) return '';
+  const end = finished ? parseDate(finished) : new Date();
+  if(!end) return '';
+  const s=Math.round((end-sd)/1000);
   if(s<60) return s+'s';
   return Math.floor(s/60)+'m'+(s%60)+'s';
 }
@@ -444,17 +465,24 @@ async function saveConfig(){
   toast(r.ok?'服务配置已保存':'保存失败'); renderConfig();
 }
 async function saveBenchmark(){
+  /* 空值不提交（清空数字框不应静默存成 0，0 会让请求数=并发×0） */
+  const num = id => { const v=$('#'+id).value; return v==='' ? undefined : +v; };
   const payload={
-    benchmark:{ sla_lower_bound:+$('#cfg-sla_lower_bound').value, sla_upper_bound:+$('#cfg-sla_upper_bound').value,
-                sla_num_runs:+$('#cfg-sla_num_runs').value, number_multiplier:+$('#cfg-number_multiplier').value,
-                warmup_num:+$('#cfg-warmup_num').value, num_workers:+$('#cfg-num_workers').value }
+    benchmark:{ sla_lower_bound:num('cfg-sla_lower_bound'), sla_upper_bound:num('cfg-sla_upper_bound'),
+                sla_num_runs:num('cfg-sla_num_runs'), number_multiplier:num('cfg-number_multiplier'),
+                warmup_num:num('cfg-warmup_num'), num_workers:num('cfg-num_workers') }
   };
+  payload.benchmark = Object.fromEntries(Object.entries(payload.benchmark).filter(([k,v])=>v!==undefined));
   const r=await api('/api/config',{method:'POST',body:JSON.stringify(payload)});
   toast(r.ok?'摸高参数已保存':'保存失败');
 }
 
 /* ============================ 测试用例 ============================ */
 async function renderCases(){
+  /* 保留用户当前搜索词与勾选状态（3s 自动刷新时不回滚） */
+  const prevSearch = (document.getElementById('case-search')||{}).value || '';
+  const prevChecks = {};
+  $$('#main tbody tr[data-id]').forEach(tr=>{ const cb=tr.querySelector('.en'); if(cb) prevChecks[tr.dataset.id]=cb.checked; });
   const [casesRes, cfgRes] = await Promise.all([api('/api/cases'), api('/api/config')]);
   const cases = casesRes.cases;
   const bench = (cfgRes.benchmark)||{};
@@ -521,6 +549,16 @@ async function renderCases(){
     tbody.append(tr);
   });
   tb.append(tbody); wrap.append(tb); card.append(wrap);
+  /* 恢复搜索词与勾选（3s 自动刷新不回滚用户操作） */
+  const searchInp=document.getElementById('case-search');
+  if(searchInp && prevSearch){
+    searchInp.value=prevSearch;
+    searchInp.dispatchEvent(new Event('input'));
+  }
+  $$('#main tbody tr[data-id]').forEach(tr=>{
+    const cb=tr.querySelector('.en');
+    if(cb && tr.dataset.id in prevChecks) cb.checked=prevChecks[tr.dataset.id];
+  });
   card.append(el('div',{cls:'row-actions'}, btn('保存用例（启停）','save','primary',saveCases)));
   m.append(card);
 
@@ -570,8 +608,8 @@ async function addCase(){
 }
 async function delCase(id){
   if(!confirm('删除用例 '+id+' ?')) return;
-  await api('/api/cases/delete',{method:'POST',body:JSON.stringify({id})});
-  toast('已删除'); renderCases();
+  const r=await api('/api/cases/delete',{method:'POST',body:JSON.stringify({id})});
+  toast(r.ok!==false?'已删除':('删除失败: '+(r.error||''))); renderCases();
 }
 async function genCase(id){
   const b=document.querySelector('[data-gen="'+id+'"]');
@@ -593,8 +631,6 @@ document.addEventListener('click', e=>{
   if(g){ genCase(g.dataset.gen); return; }
   const d=e.target.closest&&e.target.closest('[data-del]');
   if(d&&d.tagName==='BUTTON'){ delCase(d.dataset.del); return; }
-  const a=e.target.closest&&e.target.closest('[data-accdel]');
-  if(a&&a.tagName==='BUTTON'){ delAccGroup(+a.dataset.accdel); return; }
 });
 
 /* ============================ 测试工程 ============================ */
@@ -619,7 +655,7 @@ async function renderProjects(){
       const pct=total?Math.round((p.done||0)/total*100):0;
       const running=!!p.is_running;
       const card=el('div',{cls:'proj-card'});
-      card.append(el('h3',{}, iconEl('package'), el('span',{},esc(p.name))));
+      card.append(el('h3',{}, iconEl('package'), el('span',{},p.name)));
       card.append(el('div',{cls:'meta'},
         '用例 '+total+' · 已完成 '+(p.done||0)+' · 进行/排队 '+(p.running||0)+' · '+esc(p.created||'')));
       card.append(el('div',{cls:'bar',html:'<div style="width:'+pct+'%"></div>'}));
@@ -700,17 +736,18 @@ async function newProject(){
   }));
   ops.append(el('button',{onclick:()=>dlg.close()},'取消'));
   body.append(ops);
-  dlg.showModal();
+  if(!dlg.open) dlg.showModal();
 }
 async function delProject(id){
   if(!confirm('删除该测试工程？（不影响已生成的结果）')) return;
-  await api('/api/projects/delete',{method:'POST',body:JSON.stringify({id})});
-  toast('已删除'); renderProjects();
+  const r=await api('/api/projects/delete',{method:'POST',body:JSON.stringify({id})});
+  toast(r.ok!==false?'已删除':('删除失败: '+(r.error||''))); renderProjects();
 }
 async function runProject(id){
   const r=await api('/api/projects/'+id+'/run',{method:'POST',body:JSON.stringify({})});
   toast(r.ok?('已启动 '+(r.queued||[]).length+' 个用例'):('启动失败: '+(r.error||'')));
-  if(CURRENT_PROJECT===id) setTimeout(()=>renderProjectDetail(id),700);
+  // 列表页也要刷新：否则按钮仍可点、进度条死值（CURRENT_PROJECT 只在详情页非空）
+  setTimeout(()=>{ CURRENT_PROJECT===id ? renderProjectDetail(id) : (VIEW==='projects'&&renderProjects()); },700);
 }
 async function stopProject(id){
   await api('/api/projects/'+id+'/stop',{method:'POST',body:'{}'});
@@ -731,6 +768,8 @@ async function packProject(id){
 async function renderProjectDetail(pid){
   const d=await api('/api/projects/'+pid);
   if(d.ok===false){ CURRENT_PROJECT=null; return renderProjects(); }
+  /* 竞态防护：await 期间用户可能已切走（返回列表/切页签），此时不再渲染 */
+  if(VIEW!=='projects' || CURRENT_PROJECT!==pid) return;
   const m=$('#main'); m.innerHTML='';
   m.append(el('span',{cls:'back',onclick:()=>{CURRENT_PROJECT=null;renderProjects();}}, iconEl('arrowLeft'), el('span',{},'返回工程列表')));
   m.append(el('div',{cls:'page-head'}, el('h1',{}, d.project.name),
@@ -749,6 +788,8 @@ async function renderProjectDetail(pid){
   await Promise.all(d.cases.filter(c=>c.status==='done').map(async c=>{
     try{ const r=await api('/api/projects/'+pid+'/case/'+c.case_id); PROJECT_BEST[c.case_id]=bestOf(r); }catch(e){}
   }));
+  /* 第二次 await 后再校验一次：期间可能已切走 */
+  if(VIEW!=='projects' || CURRENT_PROJECT!==pid) return;
   const card=el('div',{cls:'card'});
   card.append(el('h2',{}, iconEl('flask'), el('span',{},'工程用例'), el('span',{cls:'hint'}, '已完成用例仅显示最优结果')));
   const wrap=el('div',{style:'overflow:auto'});
@@ -798,8 +839,16 @@ function bestOf(d){
   return {rows,maxConc,best,peakTps,ttftSLA,tpotSLA};
 }
 async function runOne(pid,cid){
+  // 防双击重复提交：直接禁用触发按钮，避免连续两次 enqueue
+  const evt = window.event;
+  const trigger = evt && evt.target ? (evt.target.closest('button') || evt.target) : null;
+  if(trigger && trigger.tagName==='BUTTON'){
+    if(trigger.dataset.busy==='1') return;
+    trigger.dataset.busy='1'; trigger.disabled=true;
+  }
   const r=await api('/api/projects/'+pid+'/run',{method:'POST',body:JSON.stringify({case_ids:[cid]})});
-  toast(r.ok?('已启动: '+cid):('失败: '+(r.error||''))); setTimeout(()=>renderProjectDetail(pid),700);
+  toast(r.ok?('已启动: '+cid):('失败: '+(r.error||'')));
+  setTimeout(()=>renderProjectDetail(pid),700);
 }
 async function openCase(pid,cid){
   const d=await api('/api/projects/'+pid+'/case/'+cid);
@@ -894,18 +943,28 @@ async function showLog(path){
   const pre=el('pre',{cls:'log'},'');
   body.append(pre);
   if(!$('#dlg').open) $('#dlg').showModal();
-  let offset=0, total=0;
+  let offset=0, total=0, inFlight=false, failCount=0;
   async function poll(){
-    const r=await api('/api/log?path='+encodeURIComponent(path)+'&offset='+offset);
-    if(!r.ok){ info.textContent=r.error||'读取失败'; return; }
-    if(r.lines && r.lines.length){
-      pre.textContent += r.lines.join('');
-      offset += r.lines.length;
-      total = r.total;
-      pre.scrollTop = pre.scrollHeight;
-    }
-    info.textContent = total+' 行' + (offset>=total?' (已全部加载)':' (实时跟踪中…)');
-    stopBtn.disabled=false;
+    if(inFlight) return;   // 防重入：慢响应时两次 poll 读同一 offset 会重复追加
+    inFlight=true;
+    try{
+      const r=await api('/api/log?path='+encodeURIComponent(path)+'&offset='+offset);
+      if(!r.ok){
+        info.textContent=r.error||'读取失败';
+        if(++failCount>=3 && _LOG_POLL){ clearInterval(_LOG_POLL); _LOG_POLL=null;
+          stopBtn.textContent='▶ 恢复刷新'; }
+        return;
+      }
+      failCount=0;
+      if(r.lines && r.lines.length){
+        pre.textContent += r.lines.join('');
+        offset += r.lines.length;
+        total = r.total;
+        pre.scrollTop = pre.scrollHeight;
+      }
+      info.textContent = total+' 行' + (offset>=total?' (已全部加载)':' (实时跟踪中…)');
+      stopBtn.disabled=false;
+    } finally { inFlight=false; }
   }
   await poll();
   _LOG_POLL = setInterval(poll, 2000);
@@ -925,9 +984,14 @@ function statusCard(baseId, st, running, labelMap){
   c.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行状态'), el('span',{cls:'hint'}, running?'进行中':'空闲')));
   const kv=el('div',{cls:'kv'});
   kv.append(el('div',{cls:'k'},'状态'), el('div',{cls:'v',html:pill(st.status||'not_started')}));
-  kv.append(el('div',{cls:'k'},'开始'), el('div',{cls:'v'},(st.started||'-')+(running?' <span class="elapsed">'+elapsed(st.started)+'</span>':'')));
+  const startV=el('div',{cls:'v'}, st.started||'-');
+  if(running && st.started){
+    startV.append(document.createTextNode(' '));
+    startV.append(el('span',{cls:'elapsed'}, elapsed(st.started)));
+  }
+  kv.append(el('div',{cls:'k'},'开始'), startV);
   kv.append(el('div',{cls:'k'},'结束'), el('div',{cls:'v'},st.finished||'-'));
-  if(st.error) kv.append(el('div',{cls:'k'},'错误'), el('div',{cls:'v',style:'color:var(--destructive)'},esc(st.error)));
+  if(st.error) kv.append(el('div',{cls:'k'},'错误'), el('div',{cls:'v',style:'color:var(--destructive)'},st.error));
   const ld=el('div',{cls:'v'});
   if(st.log_path){ ld.innerHTML='<code>'+esc(st.log_path)+'</code> '; const b=el('button',{cls:'small'},'查看日志'); b.onclick=()=>showLog(st.log_path); ld.append(b); }
   else ld.innerHTML='<span class="muted">-</span>';
@@ -1023,6 +1087,17 @@ function fallbackCopy(text,btn){
   catch(e) { toast('复制失败，请手动选择'); }
   ta.remove();
 }
+/* ---- 状态轮询工具：带句柄，重入时清旧链，避免切页签后轮询链成倍累加 ---- */
+const _POLLERS = {};   // name -> timeout id
+function pollStatus(name, fn, intervalMs){
+  if(_POLLERS[name]){ clearTimeout(_POLLERS[name]); _POLLERS[name]=null; }
+  _POLLERS[name] = setTimeout(async()=>{
+    _POLLERS[name]=null;
+    await fn();
+  }, intervalMs);
+}
+function stopPoller(name){ if(_POLLERS[name]){ clearTimeout(_POLLERS[name]); _POLLERS[name]=null; } }
+
 async function refreshFuncStatus(){
   const st=await api('/api/functional/status');
   if(!$('#func-status-card')) return;
@@ -1030,7 +1105,7 @@ async function refreshFuncStatus(){
   const rb=$('#func-run-btn'), sb=$('#func-stop-btn');
   if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
   statusCard('func-status-card', st, running);
-  if(running){ setTimeout(async()=>{ await refreshFuncStatus(); await loadFuncReport(); },4000); }
+  if(running){ pollStatus('func', async()=>{ await refreshFuncStatus(); await loadFuncReport(); },4000); }
   else { await loadFuncReport(); }
 }
 async function loadFuncReport(){
@@ -1052,7 +1127,7 @@ async function viewFuncList(){
   $('#dlg-title').textContent='功能测试用例清单';
   $('#dlg-body').innerHTML='';
   $('#dlg-body').append(el('pre',{cls:'log'},(r.lines||['(空)']).join('\n')));
-  $('#dlg').showModal();
+  if(!$('#dlg').open) $('#dlg').showModal();
 }
 
 /* ============================ 精度测试 ============================ */
@@ -1170,7 +1245,7 @@ async function refreshAccStatus(){
   const rb=$('#acc-run-btn'), sb=$('#acc-stop-btn');
   if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
   statusCard('acc-status-card', st, running);
-  if(running){ setTimeout(async()=>{ await refreshAccStatus(); await loadAccReport(); },6000); }
+  if(running){ pollStatus('acc', async()=>{ await refreshAccStatus(); await loadAccReport(); },6000); }
   else { await loadAccReport(); }
 }
 async function loadAccReport(){
@@ -1272,7 +1347,7 @@ async function refreshAgentXStatus(){
   const rb=$('#agentx-run-btn'), sb=$('#agentx-stop-btn');
   if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
   statusCard('agentx-status-card', st, running);
-  if(running){ setTimeout(async()=>{ await refreshAgentXStatus(); await loadAgentXReport(); },5000); }
+  if(running){ pollStatus('agentx', async()=>{ await refreshAgentXStatus(); await loadAgentXReport(); },5000); }
   else { await loadAgentXReport(); }
 }
 async function loadAgentXReport(){
@@ -1312,15 +1387,20 @@ async function stopAgentX(){
 const RENDER={ config:renderConfig, cases:renderCases, projects:renderProjects,
                functional:renderFunctional, accuracy:renderAccuracy, agentx:renderAgentX };
 async function go(view){
+  /* 切页签前停掉功能/精度/AgentX 的轮询链，防止旧链残留叠加请求 */
+  ['func','acc','agentx'].forEach(stopPoller);
   VIEW=view;
   if(view!=='projects') CURRENT_PROJECT=null;
   /* 记到 URL hash: 刷新/分享链接后回到当前页签 */
   if(('#'+view)!==location.hash) history.replaceState(null,'','#'+view);
   $$('#nav a').forEach(a=>a.classList.toggle('active', a.dataset.view===view));
-  await RENDER[view]();
+  try { await RENDER[view](); }
+  catch(e){ const m=$('#main'); if(m){ m.innerHTML=''; m.append(el('div',{cls:'card'},
+    el('h2',{},'页面加载失败'), el('pre',{cls:'log'},String(e&&e.stack||e)))); } }
 }
 $$('#nav a').forEach(a=>a.onclick=()=>go(a.dataset.view));
 setInterval(()=>{ if(VIEW==='projects'&&CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); },5000);
+/* 3s 刷新仅在有生成任务进行时触发；renderCases 会保留搜索词与勾选状态 */
 setInterval(()=>{ if(VIEW==='cases'){ const g=document.querySelector('[data-gen][disabled]'); if(g) renderCases(); } },3000);
 /* 刷新后恢复上次页签（hash 优先, 无 hash 落配置项） */
 go(RENDER[location.hash.slice(1)] ? location.hash.slice(1) : 'config');

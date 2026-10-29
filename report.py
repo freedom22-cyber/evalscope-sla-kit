@@ -65,12 +65,22 @@ def find_latest_summary(scenario_dir: str):
 
 
 def load_scenario_sla(scenario_dir: str):
-    """读 sla_summary.json，返回 {parallel: metrics_dict}"""
+    """读 sla_summary.json，返回 {parallel: metrics_dict}。
+
+    坏 JSON / 非对象 JSON 只告警跳过，不让单个坏文件打断整个汇总。
+    """
     path = find_latest_summary(scenario_dir)
     if not path:
         return None, None
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"  [warn] {path} 解析失败, 跳过: {e}")
+        return None, None
+    if not isinstance(data, dict):
+        print(f"  [warn] {path} 不是 JSON 对象, 跳过")
+        return None, None
     rows = {}
     for k, v in data.items():
         if not k.startswith("parallel"):
@@ -79,7 +89,8 @@ def load_scenario_sla(scenario_dir: str):
             par = int(k.split("_")[1])
         except (IndexError, ValueError):
             continue
-        rows[par] = v.get("metrics", {}) or {}
+        m = v.get("metrics", {}) if isinstance(v, dict) else {}
+        rows[par] = m or {}
     return rows, path
 
 
@@ -111,8 +122,11 @@ def main():
     ap.add_argument("--out", default=None, help="额外输出 markdown 文件路径")
     args = ap.parse_args()
 
+    # 只列摸高场景目录：跳过 accuracy/agentx/functional/_hixl_warmup 等非场景目录
+    _NON_SCENARIO = {"accuracy", "agentx", "functional", "_hixl_warmup"}
     scenario_dirs = sorted(
-        d for d in glob.glob(os.path.join(RESULTS_DIR, "*")) if os.path.isdir(d))
+        d for d in glob.glob(os.path.join(RESULTS_DIR, "*"))
+        if os.path.isdir(d) and os.path.basename(d) not in _NON_SCENARIO)
     if not scenario_dirs:
         print(f"results/ 下没有场景结果目录，先跑 runner.py")
         return 1
@@ -167,10 +181,13 @@ def main():
                       f"{fmt(m.get(K_LAT), 1)} | {ok:.0f}/{total:.0f} | "
                       f"{fmt(m.get(K_OUT_TPS), 1)} | {fmt(m.get(K_TOTAL_TPS), 1)} |")
             if args.npu:
-                line += (f" {fmt((m.get(K_OUT_TPS) or 0) / args.npu, 1):>11} "
-                         f"{fmt((m.get(K_TOTAL_TPS) or 0) / args.npu, 1):>11}")
-                md_row += (f" {fmt((m.get(K_OUT_TPS) or 0) / args.npu, 1)} | "
-                           f"{fmt((m.get(K_TOTAL_TPS) or 0) / args.npu, 1)} |")
+                # 吞吐缺失显示 '-' 而不是 0.0
+                out_ps = m.get(K_OUT_TPS)
+                tot_ps = m.get(K_TOTAL_TPS)
+                line += (f" {fmt(out_ps / args.npu if out_ps is not None else None, 1):>11} "
+                         f"{fmt(tot_ps / args.npu if tot_ps is not None else None, 1):>11}")
+                md_row += (f" {fmt(out_ps / args.npu if out_ps is not None else None, 1)} | "
+                           f"{fmt(tot_ps / args.npu if tot_ps is not None else None, 1)} |")
             if lims:
                 line += f" {verdict:>6}"
                 md_row += f" {verdict} |"

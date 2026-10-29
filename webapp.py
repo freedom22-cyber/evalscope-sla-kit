@@ -25,8 +25,10 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 
 KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, KIT_ROOT)
@@ -53,10 +55,12 @@ STATE_LOCK = threading.Lock()
 _TASKS = {}          # "<project>/<case>" -> task
 _RUN_QUEUE = []      # [(project_id, case_id)]
 _RUN_THREAD = None
-_STOP_FLAG = threading.Event()
+_STOP_FLAG = threading.Event()     # 整个工程停止（仅 enqueue 新一批时清）
 _GEN_TASKS = {}      # case_id -> {status: idle|generating|done|error, error: str}
+_GEN_LOCK = threading.Lock()     # 数据集去重：置 generating 必须与检查原子
 _CASE_PROC = None    # 当前正在跑的性能用例子进程 (Popen, 独立进程组)
 _CASE_STOP = threading.Event()   # 请求停止当前用例
+_ACTIVE = {"project_id": None, "case_id": None}   # 当前正在跑的用例（精确停止用）
 
 
 # ---------------------------------------------------------------- state ----
@@ -80,10 +84,29 @@ def load_state():
 
 
 def save_state(st):
-    tmp = STATE_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, STATE_PATH)
+    """原子落盘：每个写者用唯一临时文件，避免并发写互相覆盖/抢同名 tmp。"""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(STATE_PATH) or ".",
+                               prefix=".web_state_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATE_PATH)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+
+
+def update_state(mutator):
+    """锁内「读-改-写」web_state.json，所有状态变更走这里防丢失更新。
+
+    mutator(st) 就地修改 st；返回值作为本函数返回值。
+    """
+    with STATE_LOCK:
+        st = load_state()
+        r = mutator(st)
+        save_state(st)
+        return r
 
 
 def effective_config():
@@ -110,9 +133,13 @@ def case_from_raw(raw, cid=None):
 
 
 def get_cases(st=None):
-    """取用例列表：state 有则用 state，否则从 config.yaml 派生。"""
+    """取用例列表：state 有则用 state，否则从 config.yaml 派生。
+
+    注意用 `is not None` 判断——空列表是合法状态（用户删光了用例），
+    当假值会让 config 场景全部复活且 add 报「已存在」。
+    """
     st = st or load_state()
-    if st.get("cases"):
+    if st.get("cases") is not None:
         return st["cases"]
     cfg = runner.load_config(CONFIG_PATH)
     out = []
@@ -138,16 +165,21 @@ def _now():
 
 
 def _persist_tasks():
-    st = load_state()
-    st["tasks"] = {k: dict(v) for k, v in _TASKS.items()}
-    save_state(st)
+    with STATE_LOCK:
+        snapshot = {k: dict(v) for k, v in list(_TASKS.items())}
+        st = load_state()
+        st["tasks"] = snapshot
+        save_state(st)
 
 
 def _set_task(key, **kw):
     with STATE_LOCK:
         t = _TASKS.setdefault(key, {"key": key})
         t.update(kw)
-    _persist_tasks()
+        snapshot = {k: dict(v) for k, v in list(_TASKS.items())}
+        st = load_state()
+        st["tasks"] = snapshot
+        save_state(st)
 
 
 def _task_key(project_id, case_id):
@@ -219,6 +251,7 @@ def _run_case(project_id, case_id, cfg, st):
         return
 
     log_path = os.path.join(LOGS_DIR, f"proj_{project_id}_{case_id}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    _ACTIVE["project_id"], _ACTIVE["case_id"] = project_id, case_id
     _set_task(key, status="running", started=_now(), finished=None, error=None,
               log_path=log_path, result_dir=os.path.join(RESULTS_DIR, case_id),
               case_id=case_id, project_id=project_id, phase="准备中")
@@ -228,9 +261,18 @@ def _run_case(project_id, case_id, cfg, st):
             logf.write(msg + "\n")
             logf.flush()
 
+        def _stopped():
+            # 精确判断：只有在停的是本工程/本用例时才认（_STOP_FLAG 为整体停止仍生效）
+            active_mine = (_ACTIVE.get("project_id") == project_id
+                           and _ACTIVE.get("case_id") == case_id)
+            return _STOP_FLAG.is_set() or (_CASE_STOP.is_set() and active_mine)
+
         def progress(stage, detail=""):
-            """预热阶段进度 -> task 状态（页面可观测）"""
-            _set_task(key, phase=stage, phase_detail=detail)
+            """预热阶段进度 -> task 状态（页面可观测）。尽力而为，不中断主流程。"""
+            try:
+                _set_task(key, phase=stage, phase_detail=detail)
+            except Exception:
+                pass
 
         try:
             # 预检 tokenizer 路径（避免 modelscope 404）
@@ -247,11 +289,16 @@ def _run_case(project_id, case_id, cfg, st):
                 log(f"[{case_id}] hixl 建链预热 ...")
                 hixl_ds = _ensure_hixl_dataset(cfg, logf)
                 if hixl_ds:
-                    ok = runner.run_hixl_warmup(cfg, hixl_ds, log_handle=logf)
+                    ok = runner.run_hixl_warmup(cfg, hixl_ds, log_handle=logf,
+                                                stop_check=_stopped)
                     log(f"[{case_id}] hixl 建链 {'完成' if ok else '失败(继续)'}")
                 else:
                     log(f"[{case_id}] hixl 建链数据集生成失败, 跳过")
                 _HIXL_DONE.set()
+            if _stopped():
+                _set_task(key, status="stopped", finished=_now())
+                log(f"[{case_id}] hixl 建链后停止")
+                return
 
             _set_task(key, phase="数据集准备")
             dataset_path = None
@@ -259,6 +306,10 @@ def _run_case(project_id, case_id, cfg, st):
                 log(f"[{case_id}] 确保数据集存在 ...")
                 dataset_path = runner.ensure_gsm8k_dataset(cfg, c, force=False, log_handle=logf)
                 log(f"[{case_id}] 数据集: {dataset_path}")
+            if _stopped():
+                _set_task(key, status="stopped", finished=_now())
+                log(f"[{case_id}] 数据集准备后停止")
+                return
 
             # prefix 命中率 > 0: 正式摸高前先做前缀预热（阶梯并发, 页面可观测）
             if (c.get("hit_rate") or 0) > 0 and c["dataset"] in ("gsm8k", "random"):
@@ -266,22 +317,27 @@ def _run_case(project_id, case_id, cfg, st):
                 if prefix_prompts:
                     log(f"[{case_id}] 前缀预热: {prefix_prompts}")
                     runner.run_prefix_warmup(cfg, c, prefix_prompts,
-                                             log_handle=logf, progress_cb=progress)
+                                             log_handle=logf, progress_cb=progress,
+                                             stop_check=_stopped)
                 else:
                     log(f"[{case_id}] 前缀数据集缺失, 跳过前缀预热")
+            if _stopped():
+                _set_task(key, status="stopped", finished=_now())
+                log(f"[{case_id}] 前缀预热后停止")
+                return
 
             _set_task(key, phase="摸高测试")
             cmd = runner.build_evalscope_cmd(cfg, c, dataset_path)
             log(f"[{case_id}] 命令: " + " ".join(cmd))
             log(f"[{case_id}] 开始 {_now()}")
             global _CASE_PROC
-            _CASE_STOP.clear()
+            # 注意: 不要在此 clear _CASE_STOP —— 预热阶段若已被请求停止，这里会被清掉导致误跑
             # start_new_session: 独立进程组, stop 时 killpg 一次杀干净 (evalscope 还会派生 worker)
             proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
-            _CASE_PROC = proc
+            _CASE_PROC = (project_id, proc)
             r = proc.wait()
             _CASE_PROC = None
-            if _CASE_STOP.is_set() or _STOP_FLAG.is_set():
+            if _stopped():
                 _set_task(key, status="stopped", finished=_now())
                 log(f"[{case_id}] 已手动停止")
             elif r == 0:
@@ -294,6 +350,11 @@ def _run_case(project_id, case_id, cfg, st):
         except Exception as e:
             _set_task(key, status="error", finished=_now(), error=str(e))
             log(f"[{case_id}] 异常: {e}")
+        finally:
+            # 用例结束（无论何种路径）：清掉当前活跃标记与停止标记，避免影响后续工程/用例
+            if _ACTIVE.get("project_id") == project_id and _ACTIVE.get("case_id") == case_id:
+                _ACTIVE["project_id"], _ACTIVE["case_id"] = None, None
+                _CASE_STOP.clear()
 
 
 _HIXL_DONE = threading.Event()   # 工程本轮 hixl 建链只做一次
@@ -318,6 +379,8 @@ def _run_worker():
                 return
             project_id, case_id = _RUN_QUEUE.pop(0)
         if _STOP_FLAG.is_set():
+            # 停止请求：被弹出的项要打标 stopped，否则永久卡 pending
+            _set_task(_task_key(project_id, case_id), status="stopped", finished=_now())
             continue
         cfg, st = effective_config()
         try:
@@ -409,31 +472,36 @@ def api_cases():
 def api_set_cases(payload: dict = Body(...)):
     """整体替换用例列表（启停由前端提交完整列表）。
 
-    数据集条数在添加用例时固化：此处忽略 dataset_num 字段，
-    保留用例已有的条数（要改条数 = 新增一个用例）。
+    数据集条数在添加用例时固化：带 raw 重新解析时保留该 id 已有的
+    dataset_num（要改条数 = 新增一个用例）。
     """
-    st = load_state()
-    raw_cases = payload.get("cases")
-    if raw_cases is None:
-        return JSONResponse({"ok": False, "error": "缺少 cases"}, status_code=400)
-    existing = {c["id"]: c for c in get_cases(st)}
-    parsed = []
-    for rc in raw_cases:
-        raw = rc.get("raw") or rc.get("line")
-        if not raw:
-            old = existing.get(rc.get("id"))
-            if old is None:
-                return JSONResponse({"ok": False, "error": f"未知用例且无 raw: {rc.get('id')}"}, status_code=400)
-            c = dict(old)
-        else:
-            try:
-                c = case_from_raw(raw, cid=rc.get("id"))
-            except Exception as e:
-                return JSONResponse({"ok": False, "error": f"用例格式错误: {raw} ({e})"}, status_code=400)
-        c["enabled"] = bool(rc.get("enabled", True))
-        parsed.append(c)
-    save_cases(st, parsed)
-    return {"ok": True, "count": len(parsed)}
+    def _mutate(st):
+        raw_cases = payload.get("cases")
+        if raw_cases is None:
+            return JSONResponse({"ok": False, "error": "缺少 cases"}, status_code=400)
+        existing = {c["id"]: c for c in get_cases(st)}
+        parsed = []
+        for rc in raw_cases:
+            raw = rc.get("raw") or rc.get("line")
+            if not raw:
+                old = existing.get(rc.get("id"))
+                if old is None:
+                    return JSONResponse({"ok": False, "error": f"未知用例且无 raw: {rc.get('id')}"}, status_code=400)
+                c = dict(old)
+            else:
+                try:
+                    c = case_from_raw(raw, cid=rc.get("id"))
+                except Exception as e:
+                    return JSONResponse({"ok": False, "error": f"用例格式错误: {raw} ({e})"}, status_code=400)
+                # 保留固化条数：raw 重解析会丢 dataset_num，从既有用例补回
+                old = existing.get(c["id"])
+                if old is not None and old.get("dataset_num") is not None:
+                    c["dataset_num"] = old["dataset_num"]
+            c["enabled"] = bool(rc.get("enabled", True))
+            parsed.append(c)
+        st["cases"] = parsed
+        return {"ok": True, "count": len(parsed)}
+    return update_state(_mutate)
 
 
 @app.post("/api/cases/add")
@@ -443,24 +511,47 @@ def api_case_add(payload: dict = Body(...)):
         c = case_from_raw(raw)
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"格式错误: {e}"}, status_code=400)
-    if payload.get("dataset_num") not in (None, ""):
-        c["dataset_num"] = int(payload["dataset_num"])
-    st = load_state()
-    cases = get_cases(st)
-    if any(x["id"] == c["id"] for x in cases):
-        return JSONResponse({"ok": False, "error": f"用例已存在: {c['id']}"}, status_code=400)
-    cases.append(c)
-    save_cases(st, cases)
-    return {"ok": True, "case": c}
+    dataset_num = payload.get("dataset_num")
+    if dataset_num not in (None, ""):
+        try:
+            c["dataset_num"] = int(dataset_num)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": f"dataset_num 必须是整数: {dataset_num!r}"}, status_code=400)
+    # dataset_num 进 ID：仅条数不同的用例是不同用例（结果目录/数据集都按条数隔离）
+    if c.get("dataset_num"):
+        c["id"] = f"{c['id']}_num{c['dataset_num']}"
+
+    def _mutate(st):
+        cases = get_cases(st)
+        if any(x["id"] == c["id"] for x in cases):
+            return JSONResponse({"ok": False, "error": f"用例已存在: {c['id']}"}, status_code=400)
+        cases.append(c)
+        st["cases"] = cases
+        return {"ok": True, "case": c}
+    return update_state(_mutate)
+
+
+_ID_RE = re.compile(r"^[0-9A-Za-z_.\-]{1,120}$")
+
+
+def _safe_id(x):
+    """校验 id 防路径穿越/glob 注入（拒绝 / .. * 等）。"""
+    if not isinstance(x, str) or not _ID_RE.match(x):
+        return None
+    return x
 
 
 @app.post("/api/cases/delete")
 def api_case_delete(payload: dict = Body(...)):
-    cid = payload.get("id")
-    st = load_state()
-    cases = [c for c in get_cases(st) if c["id"] != cid]
-    save_cases(st, cases)
-    return {"ok": True}
+    cid = _safe_id(payload.get("id"))
+    if cid is None:
+        return JSONResponse({"ok": False, "error": "非法用例 ID"}, status_code=400)
+
+    def _mutate(st):
+        cases = [c for c in get_cases(st) if c["id"] != cid]
+        st["cases"] = cases
+        return {"ok": True}
+    return update_state(_mutate)
 
 
 # ----- 数据集 -----
@@ -482,24 +573,25 @@ def api_datasets_generate(payload: dict = Body(default={})):
     case_ids = payload.get("case_ids")
     cases = get_cases(st)
     todo = {}
-    for c in cases:
-        if c.get("dataset") not in ("gsm8k", "random"):
-            continue
-        if case_ids is not None and c["id"] not in case_ids:
-            continue
-        # 正在生成中的跳过
-        gt = _GEN_TASKS.get(c["id"])
-        if gt and gt.get("status") == "generating":
-            continue
-        jsonl, prompts = runner.gsm8k_dataset_paths(cfg, c)
-        if os.path.exists(prompts) and not force:
-            continue  # 已生成且非强制 -> 跳过
-        todo[os.path.basename(prompts)] = c
+    with _GEN_LOCK:
+        for c in cases:
+            if c.get("dataset") not in ("gsm8k", "random"):
+                continue
+            if case_ids is not None and c["id"] not in case_ids:
+                continue
+            # 去重竞态修复：在端点内（起线程之前）就置 generating，双击第二次直接跳过
+            gt = _GEN_TASKS.get(c["id"])
+            if gt and gt.get("status") == "generating":
+                continue
+            jsonl, prompts = runner.gsm8k_dataset_paths(cfg, c)
+            if os.path.exists(prompts) and not force:
+                continue  # 已生成且非强制 -> 跳过
+            todo[os.path.basename(prompts)] = c
+            _GEN_TASKS[c["id"]] = {"status": "generating", "error": None}
 
     def gen_all():
         for fn, c in todo.items():
             cid = c["id"]
-            _GEN_TASKS[cid] = {"status": "generating", "error": None}
             log_path = os.path.join(LOGS_DIR, f"gen_{cid}_{time.strftime('%Y%m%d_%H%M%S')}.log")
             with open(log_path, "a", encoding="utf-8", buffering=1) as lf:
                 try:
@@ -536,25 +628,31 @@ def api_projects():
 
 @app.post("/api/projects")
 def api_project_add(payload: dict = Body(...)):
-    st = load_state()
-    name = (payload.get("name") or "").strip() or f"工程{len(st.get('projects') or []) + 1}"
-    case_ids = payload.get("case_ids")
-    if case_ids is None:
-        case_ids = [c["id"] for c in get_cases(st) if c.get("enabled")]
-    pid = re.sub(r"[^0-9A-Za-z_\-]", "_", name)[:40] + "_" + time.strftime("%H%M%S")
-    st.setdefault("projects", []).append({"id": pid, "name": name, "case_ids": list(case_ids),
-                                          "created": _now()})
-    save_state(st)
-    return {"ok": True, "project": {"id": pid, "name": name}}
+    def _mutate(st):
+        name = payload.get("name")
+        if not isinstance(name, str):
+            name = ""
+        name = name.strip() or f"工程{len(st.get('projects') or []) + 1}"
+        case_ids = payload.get("case_ids")
+        if case_ids is None:
+            case_ids = [c["id"] for c in get_cases(st) if c.get("enabled")]
+        # id 加毫秒+随机段：同秒同名工程不再冲突
+        pid = (re.sub(r"[^0-9A-Za-z_\-]", "_", name)[:40] + "_"
+               + time.strftime("%H%M%S") + f"{int(time.time() * 1000) % 1000:03d}"
+               + uuid.uuid4().hex[:4])
+        st.setdefault("projects", []).append({"id": pid, "name": name, "case_ids": list(case_ids),
+                                              "created": _now()})
+        return {"ok": True, "project": {"id": pid, "name": name}}
+    return update_state(_mutate)
 
 
 @app.post("/api/projects/delete")
 def api_project_delete(payload: dict = Body(...)):
-    st = load_state()
     pid = payload.get("id")
-    st["projects"] = [p for p in (st.get("projects") or []) if p["id"] != pid]
-    save_state(st)
-    return {"ok": True}
+    def _mutate(st):
+        st["projects"] = [p for p in (st.get("projects") or []) if p["id"] != pid]
+        return {"ok": True}
+    return update_state(_mutate)
 
 
 @app.get("/api/projects/{pid}")
@@ -585,6 +683,9 @@ def api_project_detail(pid: str):
 
 @app.get("/api/projects/{pid}/case/{cid}")
 def api_project_case_detail(pid: str, cid: str):
+    # id 校验防路径穿越（cid 会拼进 glob 与文件路径）
+    if _safe_id(cid) is None:
+        return JSONResponse({"ok": False, "error": "非法用例 ID"}, status_code=400)
     res = _result_of(cid)
     t = _TASKS.get(_task_key(pid, cid), {})
     per_logs = sorted(glob.glob(os.path.join(res["result_dir"], "*", "*", "sla_tuning", "*", "benchmark.log")))
@@ -606,8 +707,8 @@ def api_project_run(pid: str, payload: dict = Body(default={})):
         return JSONResponse({"ok": False, "error": "工程不存在"}, status_code=404)
     cids = payload.get("case_ids") or p.get("case_ids", [])
     items = [(pid, cid) for cid in cids]
-    for _, cid in items:
-        _set_task(_task_key(pid, cid), status="pending")
+    # 不在此覆盖状态（会把正在 running 的用例重置成 pending）；enqueue_runs 内部已做
+    # “非 running 才置 pending，已在队列不重复入队”的保护。
     enqueue_runs(items)
     return {"ok": True, "queued": [c for _, c in items]}
 
@@ -615,13 +716,19 @@ def api_project_run(pid: str, payload: dict = Body(default={})):
 @app.post("/api/projects/{pid}/stop")
 def api_project_stop(pid: str):
     global _CASE_PROC
-    _STOP_FLAG.set()
-    _CASE_STOP.set()
-    # 真正杀当前正在跑的用例子进程树（evalscope 及其 worker）
-    _kill_tree(_CASE_PROC)
-    _CASE_PROC = None
+    # 只停本工程：从队列清掉本 pid 的项，杀本 pid 正在跑的用例。
+    # 不碰全局 _STOP_FLAG / 不误杀其他工程。
     with STATE_LOCK:
         _RUN_QUEUE[:] = [it for it in _RUN_QUEUE if it[0] != pid]
+    cp = _CASE_PROC
+    # 用例正在跑（摸高 或 预热阶段）—— 只要活跃用例属于本工程就打停止标记：
+    # 预热阶段 _CASE_PROC 尚未赋值(None)，靠 _ACTIVE 判断；_stopped() 读 _CASE_STOP+active
+    if _ACTIVE.get("project_id") == pid:
+        _CASE_STOP.set()
+        # 杀正在跑的用例子进程树（摸高阶段才有）
+        if cp and cp[0] == pid:
+            _kill_tree(cp[1])
+            _CASE_PROC = None
     st = load_state()
     p = next((x for x in (st.get("projects") or []) if x["id"] == pid), None)
     if p:
@@ -634,12 +741,16 @@ def api_project_stop(pid: str):
 
 @app.get("/api/log")
 def api_log(path: str, offset: int = 0, tail: int = 0):
-    """读取日志文件。offset=从第几行开始(0-based)；tail=只返回最后 N 行(与 offset 互斥)。"""
+    """读取日志文件。offset=从第几行开始(0-based)；tail=只返回最后 N 行(与 offset 互斥)。
+
+    offset=0 时返回文件**前** 800 行（不是最后 800 行）——前端按「已读行号」
+    递增轮询，若首屏给尾部会导致 offset 语义错位、重复追加。
+    """
     ap = os.path.abspath(path)
     B = os.path.abspath(KIT_ROOT)
     if not (ap == B or ap.startswith(B + os.sep)):
         return JSONResponse({"ok": False, "error": "路径越界"}, status_code=400)
-    if not os.path.exists(ap):
+    if not os.path.isfile(ap):
         return {"ok": False, "error": "文件不存在", "lines": [], "total": 0}
     with open(ap, "r", encoding="utf-8", errors="replace") as f:
         all_lines = f.readlines()
@@ -647,8 +758,8 @@ def api_log(path: str, offset: int = 0, tail: int = 0):
     if tail > 0:
         return {"ok": True, "lines": all_lines[-tail:], "total": total}
     if offset > 0:
-        return {"ok": True, "lines": all_lines[offset:], "total": total, "offset": offset}
-    return {"ok": True, "lines": all_lines[-800:], "total": total}
+        return {"ok": True, "lines": all_lines[offset:offset + 800], "total": total, "offset": offset}
+    return {"ok": True, "lines": all_lines[:800], "total": total, "offset": 0}
 
 
 # ----------------------------------------------------- 功能/精度/AgentX 测试 -------
@@ -661,33 +772,44 @@ _AGENTX_PROC = None
 
 
 def _kill_tree(proc):
-    """杀整棵进程树。子进程用 start_new_session 起在独立进程组，killpg 一次清干净。"""
+    """杀整棵进程树。子进程用 start_new_session 起在独立进程组，killpg 一次清干净。
+
+    主进程已退出时也尝试 killpg——同组的 worker 可能还活着（孤儿压测）。
+    """
     if proc is None:
         return False
     try:
-        if proc.poll() is not None:
-            return False   # 已退出
         pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
-        proc.wait(timeout=5)
-        return True
     except (ProcessLookupError, PermissionError):
-        # 进程组已不在：兜底杀主进程
+        pgid = None
+    killed = False
+    if pgid is not None:
         try:
+            os.killpg(pgid, signal.SIGKILL)
+            killed = True
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        if proc.poll() is None:
             proc.kill()
-            proc.wait(timeout=5)
-            return True
-        except Exception:
-            return False
+            killed = True
     except Exception:
-        return False
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+    return killed
 
 
 def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
-    """通用后台执行：功能/精度/AgentX 测试共用。start_new_session 起独立进程组供 stop 整组杀。"""
+    """通用后台执行：功能/精度/AgentX 测试共用。start_new_session 起独立进程组供 stop 整组杀。
+
+    调用方须已在线程外把 task_dict 置为 running（CAS 防双提交）。
+    """
     global _FUNC_PROC, _ACC_PROC, _AGENTX_PROC
     log_path = os.path.join(LOGS_DIR, f"{log_prefix}_{time.strftime('%Y%m%d_%H%M%S')}.log")
-    task_dict.update(status="running", started=_now(), finished=None, error=None, log_path=log_path)
+    task_dict.update(started=_now(), finished=None, error=None, log_path=log_path)
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
         try:
             logf.write(f"[{log_prefix}] 命令: {' '.join(cmd)}\n")
@@ -700,6 +822,13 @@ def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
                 _ACC_PROC = proc
             else:
                 _AGENTX_PROC = proc
+            # Popen 之后发现已被请求停止：立即杀掉，避免幽灵进程
+            if task_dict.get("status") == "stopped":
+                _kill_tree(proc)
+                if log_prefix == "func": _FUNC_PROC = None
+                elif log_prefix == "acc": _ACC_PROC = None
+                else: _AGENTX_PROC = None
+                return
             r = proc.wait()
             if task_dict.get("status") == "stopped":
                 pass   # 已被 stop 标记，不覆盖
@@ -746,8 +875,12 @@ def api_func_status():
 
 @app.post("/api/functional/run")
 def api_func_run(payload: dict = Body(default={})):
-    if _FUNC_TASK.get("status") == "running":
-        return JSONResponse({"ok": False, "error": "功能测试正在运行中"}, status_code=409)
+    # CAS 防双提交：锁内检查并置 running，成功才起线程
+    with STATE_LOCK:
+        if _FUNC_TASK.get("status") == "running":
+            return JSONResponse({"ok": False, "error": "功能测试正在运行中"}, status_code=409)
+        _FUNC_TASK.clear()
+        _FUNC_TASK.update(status="running")
     cfg, _ = effective_config()
     extra = []
     fcfg = cfg.get("functional", {})
@@ -929,8 +1062,12 @@ def api_acc_set_config(payload: dict = Body(...)):
 
 @app.post("/api/accuracy/run")
 def api_acc_run(payload: dict = Body(default={})):
-    if _ACC_TASK.get("status") == "running":
-        return JSONResponse({"ok": False, "error": "精度测试正在运行中"}, status_code=409)
+    # CAS 防双提交：锁内检查并置 running，成功才继续构建命令
+    with STATE_LOCK:
+        if _ACC_TASK.get("status") == "running":
+            return JSONResponse({"ok": False, "error": "精度测试正在运行中"}, status_code=409)
+        _ACC_TASK.clear()
+        _ACC_TASK.update(status="running")
     # 用户本次运行选的数据集只在内存生效（临时 YAML），不写 web_state——
     # 否则会把整组配置覆盖成只剩本次选中的数据集，刷新后丢失其余数据集。
     cfg, _ = effective_config()
@@ -945,10 +1082,11 @@ def api_acc_run(payload: dict = Body(default={})):
         line = f"{tag}, {' '.join(datasets)}, {rounds}, {effort}, {max_tokens}, {batch}, {k}"
         # 仅覆盖本次运行用的 cfg 副本，不落 web_state
         cfg.setdefault("accuracy", {})["datasets"] = [line]
-    # 把本次运行的 cfg 写成临时 YAML，确保 accuracy_runner 读到的是本次选择
+    # 临时配置文件：放 TMPDIR（不落工程根），运行结束 finally 删 + Timer 兜底
     import tempfile, yaml as _yaml
+    tmp_dir = os.environ.get("TMPDIR") or tempfile.gettempdir()
     tmp_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False,
-                                          dir=KIT_ROOT, encoding="utf-8")
+                                          dir=tmp_dir, encoding="utf-8")
     _yaml.dump(cfg, tmp_cfg, allow_unicode=True, default_flow_style=False)
     tmp_cfg.close()
     cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"),
@@ -962,13 +1100,16 @@ def api_acc_run(payload: dict = Body(default={})):
     limit = payload.get("limit")
     if limit:
         cmd += ["--limit", str(int(limit))]
-    # 临时配置文件用完删除（在 _run_generic 结束后）
     def _cleanup():
         try: os.unlink(tmp_cfg.name)
         except OSError: pass
-    threading.Thread(target=_run_generic, args=("acc", _ACC_TASK, cmd, "acc"), daemon=True).start()
-    # 延迟清理：给 _run_generic 足够时间启动
-    threading.Timer(120, _cleanup).start()
+    def _run_and_cleanup():
+        try:
+            _run_generic("acc", _ACC_TASK, cmd, "acc")
+        finally:
+            _cleanup()
+    threading.Thread(target=_run_and_cleanup, daemon=True).start()
+    threading.Timer(3600, _cleanup).start()   # 兜底：防 finally 意外未执行
     return {"ok": True}
 
 @app.post("/api/accuracy/stop")
@@ -1091,13 +1232,18 @@ def api_agentx_config():
 
 @app.post("/api/agentx/run")
 def api_agentx_run(payload: dict = Body(default={})):
-    if _AGENTX_TASK.get("status") == "running":
-        return JSONResponse({"ok": False, "error": "AgentX 测试正在运行中"}, status_code=409)
+    # CAS 防双提交
+    with STATE_LOCK:
+        if _AGENTX_TASK.get("status") == "running":
+            return JSONResponse({"ok": False, "error": "AgentX 测试正在运行中"}, status_code=409)
+        _AGENTX_TASK.clear()
+        _AGENTX_TASK.update(status="running")
     # effective_config 写临时 YAML（与精度测试同模式，保证读到页面配置）
     cfg, _ = effective_config()
     import tempfile, yaml as _yaml
+    tmp_dir = os.environ.get("TMPDIR") or tempfile.gettempdir()
     tmp_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False,
-                                          dir=KIT_ROOT, encoding="utf-8")
+                                          dir=tmp_dir, encoding="utf-8")
     _yaml.dump(cfg, tmp_cfg, allow_unicode=True, default_flow_style=False)
     tmp_cfg.close()
     cmd = ["python3", os.path.join(KIT_ROOT, "agentx_runner.py"), "--config", tmp_cfg.name]
@@ -1110,8 +1256,13 @@ def api_agentx_run(payload: dict = Body(default={})):
     def _cleanup():
         try: os.unlink(tmp_cfg.name)
         except OSError: pass
-    threading.Thread(target=_run_generic, args=("agentx", _AGENTX_TASK, cmd, "agentx"), daemon=True).start()
-    threading.Timer(120, _cleanup).start()
+    def _run_and_cleanup():
+        try:
+            _run_generic("agentx", _AGENTX_TASK, cmd, "agentx")
+        finally:
+            _cleanup()
+    threading.Thread(target=_run_and_cleanup, daemon=True).start()
+    threading.Timer(3600, _cleanup).start()
     return {"ok": True}
 
 @app.post("/api/agentx/stop")
@@ -1151,35 +1302,64 @@ def api_agentx_report():
 # ----------------------------------------------------- 日志打包下载 -------
 @app.get("/api/projects/{pid}/pack")
 def api_project_pack(pid: str):
-    """打包工程所有日志+结果为 zip 流式下载。"""
-    import zipfile, io as _io
+    """打包工程所有日志+结果为 zip 下载。
+
+    注意: 结果目录可能很大（GB 级），绝不能整包驻留内存——
+    先压缩到 TMPDIR 下的临时文件, 再用 FileResponse 流式回传, 响应结束删除。
+    """
+    import zipfile, tempfile
+    from fastapi.responses import FileResponse
     st = load_state()
     p = next((x for x in (st.get("projects") or []) if x["id"] == pid), None)
     if not p:
         return JSONResponse({"ok": False, "error": "工程不存在"}, status_code=404)
 
-    buf = _io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 1) 工程用例日志
-        for cid in p.get("case_ids", []):
-            for log in sorted(glob.glob(os.path.join(LOGS_DIR, f"proj_{pid}_{cid}_*.log"))):
-                zf.write(log, os.path.relpath(log, KIT_ROOT))
-        # 2) 结果目录
-        for cid in p.get("case_ids", []):
-            res_dir = os.path.join(RESULTS_DIR, cid)
-            if os.path.isdir(res_dir):
-                for root, _, files in os.walk(res_dir):
-                    for f in files:
-                        full = os.path.join(root, f)
-                        zf.write(full, os.path.relpath(full, KIT_ROOT))
-        # 3) web_state 中的 task 信息
-        tasks = {k: v for k, v in (st.get("tasks") or {}).items() if k.startswith(pid + "/")}
-        if tasks:
-            zf.writestr("web_tasks.json", json.dumps(tasks, ensure_ascii=False, indent=2))
-    buf.seek(0)
-    fname = f"{p.get('name','project')}_logs.zip"
-    return StreamingResponse(buf, media_type="application/zip",
-                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    tmp_dir = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    fd, zip_path = tempfile.mkstemp(suffix=".zip", dir=tmp_dir)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # 1) 工程用例日志
+            for cid in p.get("case_ids", []):
+                for log in sorted(glob.glob(os.path.join(LOGS_DIR, f"proj_{pid}_{cid}_*.log"))):
+                    zf.write(log, os.path.relpath(log, KIT_ROOT))
+            # 2) 结果目录
+            for cid in p.get("case_ids", []):
+                res_dir = os.path.join(RESULTS_DIR, cid)
+                if os.path.isdir(res_dir):
+                    for root, _, files in os.walk(res_dir):
+                        for f in files:
+                            full = os.path.join(root, f)
+                            zf.write(full, os.path.relpath(full, KIT_ROOT))
+            # 3) web_state 中的 task 信息
+            tasks = {k: v for k, v in (st.get("tasks") or {}).items() if k.startswith(pid + "/")}
+            if tasks:
+                zf.writestr("web_tasks.json", json.dumps(tasks, ensure_ascii=False, indent=2))
+    except Exception as e:
+        try: os.unlink(zip_path)
+        except OSError: pass
+        return JSONResponse({"ok": False, "error": f"打包失败: {e}"}, status_code=500)
+
+    # RFC 5987: filename* 支持 UTF-8（中文工程名），filename 给 ASCII 兜底
+    import urllib.parse as _up
+    raw_name = f"{p.get('name','project')}_logs.zip"
+    ascii_name = raw_name.encode("ascii", "ignore").decode() or "project_logs.zip"
+    quoted = _up.quote(raw_name)
+    return FileResponse(zip_path, media_type="application/zip", filename=ascii_name,
+                        headers={"Content-Disposition":
+                                 f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"},
+                        background=_FileCleanup(zip_path))
+
+
+class _FileCleanup:
+    """FileResponse 发送完成后删除临时 zip（Starlette BackgroundTask 协议）。"""
+    def __init__(self, path):
+        self.path = path
+    async def __call__(self):
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
 
 
 def main():
@@ -1187,11 +1367,16 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8300)
     args = ap.parse_args()
-    st = load_state()
-    for k, t in (st.get("tasks") or {}).items():
-        if t.get("status") == "running":
-            t["status"] = "interrupted"
-        _TASKS[k] = t
+
+    def _mutate(st):
+        for k, t in (st.get("tasks") or {}).items():
+            if t.get("status") == "running":
+                t["status"] = "interrupted"
+        return None
+    update_state(_mutate)
+    with STATE_LOCK:
+        for k, t in load_state().get("tasks", {}).items():
+            _TASKS[k] = t
     print(f"evalscope 摸高测试控制台: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

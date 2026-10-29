@@ -37,6 +37,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -58,12 +59,15 @@ def load_config(path: str) -> dict:
 
 
 def parse_variant_line(line: str) -> dict:
-    """解析变体行: "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"。"""
-    parts = [p.strip() for p in str(line).split(",")]
-    if len(parts) not in (3, 4):
-        raise ValueError(f"变体行格式错误（需 3-4 个逗号分隔字段）: {line!r}")
-    tag, dataset, conc = parts[0], parts[1], parts[2]
-    tokenizer = parts[3] if len(parts) == 4 else ""
+    """解析变体行: "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"。
+
+    用正则而非裸 split(","): local: 语料目录路径可能含逗号, 硬切会错位。
+    dataset 贪婪匹配到「, 整数(并发)」之前; tokenizer 为可选尾字段。
+    """
+    m = re.match(r"^\s*([^,]+?)\s*,\s*(.+?)\s*,\s*(\d+)\s*(?:,\s*(.+?)\s*)?$", str(line))
+    if not m:
+        raise ValueError(f"变体行格式错误（需 tag, dataset, concurrency [, tokenizer]）: {line!r}")
+    tag, dataset, conc, tokenizer = m.group(1), m.group(2), m.group(3), (m.group(4) or "")
     if not tag or not dataset:
         raise ValueError(f"变体行 tag 与 public_dataset 不能为空: {line!r}")
     try:
@@ -186,6 +190,17 @@ def build_cmd(cfg: dict, v: dict, concurrency_override: int = None) -> tuple:
     if max_ctx:
         cmd += ["--max-context-length", str(int(max_ctx))]
     cmd += ["--output-artifact-dir", work_dir]
+    # Host 头: 过 LB/网关按域名路由时需要（agentx --header Header:Value）
+    if req.get("add_host_header"):
+        host_val = req.get("host_header") or ""
+        if not host_val:
+            try:
+                from urllib.parse import urlsplit
+                host_val = urlsplit(svc.get("url", "")).hostname or ""
+            except Exception:
+                host_val = ""
+        if host_val:
+            cmd += ["--header", f"Host:{host_val}"]
     # api_key: agentx --api-key 自动加 Authorization: Bearer
     api_key = req.get("api_key") or ""
     if api_key:

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import statistics
 import subprocess
 import sys
@@ -103,18 +104,29 @@ def parse_scenario(line: str) -> dict:
     if dset not in ("random", "gsm8k"):
         raise ValueError(f"数据集类型必须是 random/gsm8k: {line!r}")
     hit_rate = parse_hit_rate(hit)
+    if not (0.0 <= hit_rate <= 1.0):
+        raise ValueError(f"缓存命中率须在 0~1 之间: {line!r}")
+    pnum_i = int(pnum)
+    if pnum_i < 1:
+        raise ValueError(f"前缀数 prefix_num 必须 >= 1: {line!r}")
+    ttft_i, tpot_i = int(ttft), int(tpot)
+    if ttft_i <= 0 or tpot_i <= 0:
+        raise ValueError(f"SLA 必须为正数（毫秒）: {line!r}")
     sc = {
         "dataset": dset,
         "input_len": parse_len(in_len),
         "output_len": parse_len(out_len),
         "hit_rate": hit_rate,
-        "prefix_num": int(pnum),
-        "ttft_sla_ms": int(ttft),
-        "tpot_sla_ms": int(tpot),
+        "prefix_num": pnum_i,
+        "ttft_sla_ms": ttft_i,
+        "tpot_sla_ms": tpot_i,
         "raw": line,
     }
     if dataset_num is not None and dataset_num != "":
-        sc["dataset_num"] = int(dataset_num)
+        dn = int(dataset_num)
+        if dn < 1:
+            raise ValueError(f"数据集条数必须 >= 1: {line!r}")
+        sc["dataset_num"] = dn
     return sc
 
 
@@ -123,10 +135,20 @@ def scenario_id(sc: dict) -> str:
 
     prefix_num > 1 时加 _pN{n} 后缀——不同前缀种类数是不同用例
     （数据集前缀池不同），否则同名冲突。
+    命中率用 4 位有效数字（去尾零）——`:.0%` 会把 0.295 与 0.3 舍成同一 ID。
     """
     def kfmt(n: int) -> str:
         return f"{n // 1024}k" if n % 1024 == 0 else str(n)
-    hit = "0" if sc["hit_rate"] == 0 else f"{sc['hit_rate']:.0%}".replace("%", "pct")
+    if sc["hit_rate"] == 0:
+        hit = "0"
+    else:
+        # 保留 XXpct 风格（90%→90pct，30%→30pct），仅在高精度时补小数（29.5%→29p5pct）
+        # 不用 :.0% —— 会把 0.295 与 0.3 舍成同一 ID，碰撞覆盖结果目录
+        pct = round(sc["hit_rate"] * 100, 4)
+        if abs(pct - round(pct)) < 1e-9:
+            hit = f"{int(round(pct))}pct"
+        else:
+            hit = f"{pct:.2f}".rstrip("0").replace(".", "p") + "pct"
     sid = f"{sc['dataset']}_{kfmt(sc['input_len'])}_{kfmt(sc['output_len'])}_hit{hit}"
     pnum = sc.get("prefix_num") or 1
     if int(pnum) > 1:
@@ -189,8 +211,14 @@ def dataset_number(cfg: dict, sc: dict) -> int:
     if sc.get("id") and sc["id"] in case_ov:
         return int(case_ov[sc["id"]])
     overrides = ds.get("number_overrides") or {}
+    # key 兼容两种写法: "65536_0" 与 "65536_0.0"（float repr 会带 .0，config 常写整数形式）
     key = f"{sc['input_len']}_{sc['hit_rate']}"
-    return int(overrides.get(key, ds["gsm8k_number"]))
+    key_int = f"{sc['input_len']}_{int(sc['hit_rate'])}" if float(sc["hit_rate"]).is_integer() else key
+    if key in overrides:
+        return int(overrides[key])
+    if key_int in overrides:
+        return int(overrides[key_int])
+    return int(ds["gsm8k_number"])
 
 
 def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
@@ -220,10 +248,13 @@ def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
 
 
 def _gen_dataset_filename(tok_name, in_len, number, hit, hit_len, pnum, dp):
-    """复现 tools/generate_dataset.py 的落盘文件名（生成后据此重命名到规范路径）。"""
+    """复现 tools/generate_dataset.py 的落盘文件名（生成后据此重命名到规范路径）。
+
+    注意 repeat_rate 是 float：1.0 会渲染成 repeatRate1.0（不是 repeatRate1）。
+    """
     if hit == 0:
         return f"GSM8K-in{in_len}-num{number}-{tok_name}.jsonl"
-    rr = hit if hit < 1 else 1
+    rr = float(hit)
     if rr >= 1:
         return f"GSM8K-in{hit_len}-num{dp * pnum}-{tok_name}-repeatRate{rr}.jsonl"
     return f"GSM8K-in{in_len}-num{number}-{tok_name}-repeatRate{rr}.jsonl"
@@ -411,44 +442,78 @@ PREFIX_WARMUP_CONCURRENCY = [1, 2, 4, 8, 16, 32, 64]
 
 
 def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
-                      log_handle=None, progress_cb=None) -> bool:
+                      log_handle=None, progress_cb=None, stop_check=None) -> bool:
     """前缀预热: 用前缀数据集按并发阶梯压测, 把前缀灌进 KV cache。
 
     每档请求数 = 并发 x 5。progress_cb(stage, detail) 用于 Web 页面观测。
-    返回 True=全部档完成; False=有档失败（不阻断后续摸高, 只告警）。
+    stop_check() 返回 True 时中止预热（Web stop 请求），已启动的档用 killpg 杀掉。
+    返回 True=全部档完成; False=有档失败或被中止（不阻断后续摸高, 只告警）。
     """
     sid = scenario_id(sc)
     warm_dir = os.path.join(RESULTS_DIR, sid, "prefix_warmup")
     os.makedirs(warm_dir, exist_ok=True)
     all_ok = True
     for conc in PREFIX_WARMUP_CONCURRENCY:
+        if stop_check and stop_check():
+            print("    [prefix 预热] 收到停止请求, 中止预热")
+            return False
         if progress_cb:
-            progress_cb(f"prefix 预热 {conc} 并发", f"请求数 {conc * 5}")
+            try:
+                progress_cb(f"prefix 预热 {conc} 并发", f"请求数 {conc * 5}")
+            except Exception:
+                pass   # 进度上报尽力而为
         out_dir = os.path.join(warm_dir, f"conc{conc}")
         cmd = build_fixed_cmd(cfg, prefix_prompts_path, conc, conc * 5, 0, out_dir,
                               output_len=16)
         print(f"    [prefix 预热] 并发 {conc}  请求数 {conc * 5}")
-        r = subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
-        if r.returncode != 0:
-            print(f"    [prefix 预热] 并发 {conc} 失败 exit={r.returncode}（继续下一档）")
+        # start_new_session: 可被 stop 整组杀; 轮询 stop 避免长档无法中断
+        proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        while proc.poll() is None:
+            if stop_check and stop_check():
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait()
+                print("    [prefix 预热] 收到停止请求, 中止预热")
+                return False
+            time.sleep(2)
+        if proc.returncode != 0:
+            print(f"    [prefix 预热] 并发 {conc} 失败 exit={proc.returncode}（继续下一档）")
             all_ok = False
     return all_ok
 
 
 def run_hixl_warmup(cfg: dict, dataset_path: str, log_handle=None,
-                    progress_cb=None) -> bool:
+                    progress_cb=None, stop_check=None) -> bool:
     """hixl 建链预热: 1k-1k / 0% 命中 / 并发 512 / 请求 1024 / warmup 512。
 
     工程启动时执行一次, 建立服务连接与初始 KV 状态。
+    stop_check() 返回 True 时中止（killpg 杀在建链进程）。
     """
     if progress_cb:
-        progress_cb("hixl 建链", "1k-1k / 并发 512 / 请求 1024 / warmup 512")
+        try:
+            progress_cb("hixl 建链", "1k-1k / 并发 512 / 请求 1024 / warmup 512")
+        except Exception:
+            pass
     warm_dir = os.path.join(RESULTS_DIR, "_hixl_warmup")
     os.makedirs(warm_dir, exist_ok=True)
     cmd = build_fixed_cmd(cfg, dataset_path, 512, 1024, 512, warm_dir, output_len=1024)
     print("  [hixl 建链] 1k-1k / 并发 512 / 请求 1024 / warmup 512")
-    r = subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
-    return r.returncode == 0
+    proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    while proc.poll() is None:
+        if stop_check and stop_check():
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait()
+            print("  [hixl 建链] 收到停止请求, 中止")
+            return False
+        time.sleep(2)
+    return proc.returncode == 0
 
 
 def health_probe_url(svc: dict) -> str:
@@ -494,7 +559,8 @@ def run_with_watchdog(cmd: list, cfg: dict) -> tuple:
 
     probe_url = health_probe_url(cfg["service"]) if itv_s > 0 else None
     t0 = time.time()
-    p = subprocess.Popen(cmd)
+    # start_new_session: 预算/健康看门狗终杀时能整组清掉 worker，不留孤儿压测
+    p = subprocess.Popen(cmd, start_new_session=True)
     fail_n, next_probe = 0, t0 + itv_s
     while True:
         rc = p.poll()
@@ -503,7 +569,7 @@ def run_with_watchdog(cmd: list, cfg: dict) -> tuple:
         now = time.time()
         if budget_s > 0 and now - t0 >= budget_s:
             print(f"  [预算看门狗] 已达时间预算 {budget_min} 分钟, 终止该场景")
-            p.kill()
+            _kill_proc_group(p)
             p.wait()
             return True, None
         if probe_url and now >= next_probe:
@@ -522,6 +588,17 @@ def run_with_watchdog(cmd: list, cfg: dict) -> tuple:
         if budget_s > 0:
             wake = min(wake, t0 + budget_s)
         time.sleep(max(0.1, wake - time.time()))
+
+
+def _kill_proc_group(p):
+    """杀进程组（Popen 用 start_new_session 起的独立组），失败回落 p.kill()。"""
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            p.kill()
+        except Exception:
+            pass
 
 
 def _fnum(v):
@@ -551,14 +628,19 @@ def partial_verdict(results_dir: str, sid: str, sc: dict, budget_min) -> None:
     """
     try:
         sdir = os.path.join(results_dir, sid)
-        ts_dirs = sorted(d for d in glob.glob(os.path.join(sdir, "*")) if os.path.isdir(d))
+        # 只认时间戳目录（YYYYMMDD_HHMMSS），跳过 prefix_warmup 等非结果目录——
+        # 字典序 prefix_warmup > 2026... 会把最新时间戳顶掉，导致 partial 静默丢失
+        ts_dirs = sorted(d for d in glob.glob(os.path.join(sdir, "*"))
+                         if os.path.isdir(d) and re.fullmatch(r"\d{8}_\d{6}", os.path.basename(d)))
         if not ts_dirs:
             print(f"  [partial] 未找到结果目录 {sdir}/<时间戳>/, 跳过 partial 判定")
             return
         mdir = ts_dirs[-1]  # 最新时间戳目录
-        subs = sorted(d for d in glob.glob(os.path.join(mdir, "*")) if os.path.isdir(d))
+        # 模型目录：其下应有 sla_tuning；没有子目录就用本身
+        subs = sorted(d for d in glob.glob(os.path.join(mdir, "*"))
+                      if os.path.isdir(d) and os.path.isdir(os.path.join(d, "sla_tuning")))
         if subs:
-            mdir = subs[0]  # 其下的模型目录（取第一个; 没有子目录就用本身）
+            mdir = subs[0]
         runs = {}
         for probe in sorted(glob.glob(os.path.join(mdir, "sla_tuning", "sla_parallel_*_run_*"))):
             mo = PROBE_DIR_RE.match(os.path.basename(probe))

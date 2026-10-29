@@ -536,6 +536,9 @@ def main():
     ap.add_argument("-f", "--foreground", action="store_true",
                     help="前台运行（实际由 run.sh 处理, runner 侧仅为兼容接收）")
     args = ap.parse_args()
+    if args.limit is not None and args.limit < 1:
+        print("--limit 必须是 >=1 的整数（0 会被当成无限量，非预期）", file=sys.stderr)
+        return 2
 
     cfg = load_config(args.config)
     if args.report:

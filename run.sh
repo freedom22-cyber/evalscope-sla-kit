@@ -40,7 +40,14 @@ LOG_DIR="${LOG_DIR:-$PWD/logs}"
 LOG="${LOG_DIR}/${PREFIX}_${TS}.log"
 mkdir -p "$LOG_DIR"
 
-if [ "${1:-}" = "-f" ] || [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "--dry-run" ] || [ "${1:-}" = "--gen-datasets" ] || [ "${1:-}" = "--list" ]; then
+# 前台类开关可能在任意位置（如 --accuracy --resume -f）: 扫描全部参数, 不只 $1
+FOREGROUND=0
+for a in "$@"; do
+  case "$a" in
+    -f|--foreground|--dry-run|--gen-datasets|--list) FOREGROUND=1 ;;
+  esac
+done
+if [ "$FOREGROUND" = "1" ]; then
   # 注意: exec 在管道里不会终止脚本（只替换管道子进程）, 前台跑完必须显式 exit,
   # 否则会继续落到下方 nohup 分支把整套测试再后台跑一遍
   "$PY" "$RUNNER" "$@" 2>&1 | tee "$LOG"
