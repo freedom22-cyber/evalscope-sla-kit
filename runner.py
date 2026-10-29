@@ -285,12 +285,11 @@ def build_evalscope_cmd(cfg: dict, sc: dict, dataset_path: str = None) -> list:
         cmd += ["--extra-args", json.dumps(extra)]
 
     if sc["dataset"] == "random":
-        # evalscope 在线生成随机 prompt；min=max=精确长度
+        # custom 数据集（本地生成定长 random 数据）+ 过滤阈值
         cmd += [
-            "--dataset", "random",
-            "--min-prompt-length", str(sc["input_len"]),
-            "--max-prompt-length", str(sc["input_len"]),
-            "--prefix-length", "0",
+            "--dataset", "custom",
+            "--dataset-path", dataset_path,
+            "--max-prompt-length", str(sc["input_len"] + PROMPT_FILTER_MARGIN),
         ]
     else:
         # custom 数据集 + 过滤阈值（input_len + 模板开销）
@@ -300,6 +299,85 @@ def build_evalscope_cmd(cfg: dict, sc: dict, dataset_path: str = None) -> list:
             "--max-prompt-length", str(sc["input_len"] + PROMPT_FILTER_MARGIN),
         ]
     return cmd
+
+
+def build_fixed_cmd(cfg: dict, dataset_path: str, parallel: int, num_requests: int,
+                    warmup_num: int, out_dir: str, output_len: int = 1024) -> list:
+    """构建固定参数压测命令（预热用，非摸高）。
+
+    - hixl 建链: 1k-1k / 0% 命中 / 并发 512 / 请求 1024 / warmup 512
+    - prefix 预热: 用前缀数据集按 1,2,4,...,64 并发阶梯, 请求数 = 并发 x 5
+    """
+    svc, bench = cfg["service"], cfg["benchmark"]
+    cmd = [
+        "evalscope", "perf",
+        "--model", svc["model"],
+        "--tokenizer-path", svc["tokenizer_path"],
+        "--url", svc["url"],
+        "--api", "openai",
+        "--apply-chat-template",
+        "--max-tokens", str(output_len),
+        "--parallel", str(parallel),
+        "--number", str(num_requests),
+        "--warmup-num", str(warmup_num),
+        "--dataset", "custom",
+        "--dataset-path", dataset_path,
+        "--max-prompt-length", str(int(1e9)),   # 预热不过滤
+        "--outputs-dir", out_dir,
+    ]
+    if bench.get("num_workers"):
+        cmd += ["--num-workers", str(bench["num_workers"])]
+    headers = build_headers(cfg)
+    if headers:
+        cmd += ["--headers"] + headers
+    extra = bench.get("extra_args") or {}
+    if extra:
+        cmd += ["--extra-args", json.dumps(extra)]
+    return cmd
+
+
+PREFIX_WARMUP_CONCURRENCY = [1, 2, 4, 8, 16, 32, 64]
+
+
+def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
+                      log_handle=None, progress_cb=None) -> bool:
+    """前缀预热: 用前缀数据集按并发阶梯压测, 把前缀灌进 KV cache。
+
+    每档请求数 = 并发 x 5。progress_cb(stage, detail) 用于 Web 页面观测。
+    返回 True=全部档完成; False=有档失败（不阻断后续摸高, 只告警）。
+    """
+    sid = scenario_id(sc)
+    warm_dir = os.path.join(RESULTS_DIR, sid, "prefix_warmup")
+    os.makedirs(warm_dir, exist_ok=True)
+    all_ok = True
+    for conc in PREFIX_WARMUP_CONCURRENCY:
+        if progress_cb:
+            progress_cb(f"prefix 预热 {conc} 并发", f"请求数 {conc * 5}")
+        out_dir = os.path.join(warm_dir, f"conc{conc}")
+        cmd = build_fixed_cmd(cfg, prefix_prompts_path, conc, conc * 5, 0, out_dir,
+                              output_len=16)
+        print(f"    [prefix 预热] 并发 {conc}  请求数 {conc * 5}")
+        r = subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
+        if r.returncode != 0:
+            print(f"    [prefix 预热] 并发 {conc} 失败 exit={r.returncode}（继续下一档）")
+            all_ok = False
+    return all_ok
+
+
+def run_hixl_warmup(cfg: dict, dataset_path: str, log_handle=None,
+                    progress_cb=None) -> bool:
+    """hixl 建链预热: 1k-1k / 0% 命中 / 并发 512 / 请求 1024 / warmup 512。
+
+    工程启动时执行一次, 建立服务连接与初始 KV 状态。
+    """
+    if progress_cb:
+        progress_cb("hixl 建链", "1k-1k / 并发 512 / 请求 1024 / warmup 512")
+    warm_dir = os.path.join(RESULTS_DIR, "_hixl_warmup")
+    os.makedirs(warm_dir, exist_ok=True)
+    cmd = build_fixed_cmd(cfg, dataset_path, 512, 1024, 512, warm_dir, output_len=1024)
+    print("  [hixl 建链] 1k-1k / 并发 512 / 请求 1024 / warmup 512")
+    r = subprocess.run(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
+    return r.returncode == 0
 
 
 def health_probe_url(svc: dict) -> str:
@@ -467,16 +545,73 @@ def partial_verdict(results_dir: str, sid: str, sc: dict, budget_min) -> None:
         print(f"  [partial] 解析失败, 跳过 partial 判定: {e}")
 
 
+def random_dataset_paths(cfg: dict, sc: dict) -> tuple:
+    """random 用例的本地数据集路径（gen_dataset 脚本生成, prefix_flag=0）。
+
+    文件名与 gsm8k 同规则（工具不区分来源, 都是定长数据）。
+    """
+    return gsm8k_dataset_paths(cfg, sc)
+
+
+def prefix_prompts_path(cfg: dict, sc: dict) -> str:
+    """前缀数据集的 prompts 路径（prefix-*.jsonl 转出的纯文本）。
+
+    generate_dataset.py 生成前缀数据集时同时落 prefix-GSM8K-in{prefix_len}-...jsonl；
+    前缀预热用它（把前缀灌进 KV cache）。
+    """
+    tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
+    in_len = sc["input_len"]
+    hit = sc["hit_rate"]
+    pnum = sc.get("prefix_num") or cfg.get("dataset", {}).get("gsm8k_prefix_num", 1)
+    dp = cfg.get("dataset", {}).get("gsm8k_dp", 1)
+    prefix_len = int(in_len * hit)
+    jsonl = os.path.join(DATASETS_DIR,
+                         f"prefix-GSM8K-in{prefix_len}-num{dp * pnum}-{tok_name}.jsonl")
+    return jsonl.rsplit(".", 1)[0] + ".prompts.txt"
+
+
+def ensure_prefix_prompts(cfg: dict, sc: dict, log_handle=None) -> str:
+    """确保前缀 prompts 存在（从 prefix jsonl 转出；jsonl 缺失时先告警返回 None）。"""
+    prompts = prefix_prompts_path(cfg, sc)
+    if os.path.exists(prompts):
+        return prompts
+    # 从 jsonl 转
+    tok_name = os.path.basename(os.path.normpath(cfg["service"]["tokenizer_path"]))
+    in_len = sc["input_len"]
+    hit = sc["hit_rate"]
+    pnum = sc.get("prefix_num") or cfg.get("dataset", {}).get("gsm8k_prefix_num", 1)
+    dp = cfg.get("dataset", {}).get("gsm8k_dp", 1)
+    prefix_len = int(in_len * hit)
+    jsonl = os.path.join(DATASETS_DIR,
+                         f"prefix-GSM8K-in{prefix_len}-num{dp * pnum}-{tok_name}.jsonl")
+    if not os.path.exists(jsonl):
+        return None
+    r = subprocess.run([sys.executable, os.path.join(TOOL_DIR, "jsonl_to_prompts.py"), jsonl],
+                       stdout=log_handle, stderr=subprocess.STDOUT)
+    if r.returncode != 0 or not os.path.exists(prompts):
+        return None
+    return prompts
+
+
 def run_scenario(cfg: dict, sc: dict, dry_run: bool) -> int:
     sid = scenario_id(sc)
     print(f"\n{'=' * 70}\n[场景 {sid}]  {sc['raw']}")
     dataset_path = None
-    if sc["dataset"] == "gsm8k":
+    # random 也本地生成定长数据集（gen_dataset 脚本, prefix_flag=0）
+    if sc["dataset"] in ("gsm8k", "random"):
         dataset_path = ensure_gsm8k_dataset(cfg, sc, dry_run)
     cmd = build_evalscope_cmd(cfg, sc, dataset_path)
     print("  命令: " + " ".join(shlex.quote(c) for c in cmd))
     if dry_run:
         return 0
+    # prefix 命中率 > 0: 正式摸高前先做前缀预热（把前缀灌进 KV cache）
+    if sc.get("hit_rate", 0) > 0 and sc["dataset"] in ("gsm8k", "random"):
+        prefix_prompts = ensure_prefix_prompts(cfg, sc)
+        if prefix_prompts:
+            print(f"  [前缀预热] {prefix_prompts}")
+            run_prefix_warmup(cfg, sc, prefix_prompts)
+        else:
+            print("  [前缀预热] 前缀数据集缺失, 跳过预热")
     t0 = time.time()
     killed, rc = run_with_watchdog(cmd, cfg)
     dt = time.time() - t0

@@ -218,12 +218,16 @@ def _run_case(project_id, case_id, cfg, st):
     log_path = os.path.join(LOGS_DIR, f"proj_{project_id}_{case_id}_{time.strftime('%Y%m%d_%H%M%S')}.log")
     _set_task(key, status="running", started=_now(), finished=None, error=None,
               log_path=log_path, result_dir=os.path.join(RESULTS_DIR, case_id),
-              case_id=case_id, project_id=project_id)
+              case_id=case_id, project_id=project_id, phase="准备中")
 
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
         def log(msg):
             logf.write(msg + "\n")
             logf.flush()
+
+        def progress(stage, detail=""):
+            """预热阶段进度 -> task 状态（页面可观测）"""
+            _set_task(key, phase=stage, phase_detail=detail)
 
         try:
             # 预检 tokenizer 路径（避免 modelscope 404）
@@ -234,11 +238,36 @@ def _run_case(project_id, case_id, cfg, st):
                 log(f"[{case_id}] {e}")
                 return
 
+            # hixl 建链（工程本轮首个用例前执行一次）
+            if not _HIXL_DONE.is_set():
+                _set_task(key, phase="hixl 建链", phase_detail="1k-1k / 并发 512 / 请求 1024 / warmup 512")
+                log(f"[{case_id}] hixl 建链预热 ...")
+                hixl_ds = _ensure_hixl_dataset(cfg, logf)
+                if hixl_ds:
+                    ok = runner.run_hixl_warmup(cfg, hixl_ds, log_handle=logf)
+                    log(f"[{case_id}] hixl 建链 {'完成' if ok else '失败(继续)'}")
+                else:
+                    log(f"[{case_id}] hixl 建链数据集生成失败, 跳过")
+                _HIXL_DONE.set()
+
+            _set_task(key, phase="数据集准备")
             dataset_path = None
-            if c["dataset"] == "gsm8k":
+            if c["dataset"] in ("gsm8k", "random"):
                 log(f"[{case_id}] 确保数据集存在 ...")
                 dataset_path = runner.ensure_gsm8k_dataset(cfg, c, force=False, log_handle=logf)
                 log(f"[{case_id}] 数据集: {dataset_path}")
+
+            # prefix 命中率 > 0: 正式摸高前先做前缀预热（阶梯并发, 页面可观测）
+            if (c.get("hit_rate") or 0) > 0 and c["dataset"] in ("gsm8k", "random"):
+                prefix_prompts = runner.ensure_prefix_prompts(cfg, c, log_handle=logf)
+                if prefix_prompts:
+                    log(f"[{case_id}] 前缀预热: {prefix_prompts}")
+                    runner.run_prefix_warmup(cfg, c, prefix_prompts,
+                                             log_handle=logf, progress_cb=progress)
+                else:
+                    log(f"[{case_id}] 前缀数据集缺失, 跳过前缀预热")
+
+            _set_task(key, phase="摸高测试")
             cmd = runner.build_evalscope_cmd(cfg, c, dataset_path)
             log(f"[{case_id}] 命令: " + " ".join(cmd))
             log(f"[{case_id}] 开始 {_now()}")
@@ -262,6 +291,19 @@ def _run_case(project_id, case_id, cfg, st):
         except Exception as e:
             _set_task(key, status="error", finished=_now(), error=str(e))
             log(f"[{case_id}] 异常: {e}")
+
+
+_HIXL_DONE = threading.Event()   # 工程本轮 hixl 建链只做一次
+
+
+def _ensure_hixl_dataset(cfg: dict, log_handle=None) -> str:
+    """hixl 建链用 1k-1k 数据集（gen_dataset 脚本, prefix_flag=0, 1024 条）。"""
+    sc = {"dataset": "random", "input_len": 1024, "output_len": 1024,
+          "hit_rate": 0, "prefix_num": 1, "id": "_hixl_1k"}
+    try:
+        return runner.ensure_gsm8k_dataset(cfg, sc, force=False, log_handle=log_handle)
+    except Exception:
+        return None
 
 
 def _run_worker():
@@ -295,6 +337,7 @@ def enqueue_runs(items):
                 _TASKS[key]["status"] = "pending"
         _STOP_FLAG.clear()
         _CASE_STOP.clear()
+        _HIXL_DONE.clear()   # 新一轮工程启动: 重新做 hixl 建链
         if _RUN_THREAD is None or not _RUN_THREAD.is_alive():
             _RUN_THREAD = threading.Thread(target=_run_worker, daemon=True)
             _RUN_THREAD.start()
@@ -528,6 +571,7 @@ def api_project_detail(pid: str):
             "hit_rate": c.get("hit_rate"),
             "ttft_sla_ms": c.get("ttft_sla_ms"), "tpot_sla_ms": c.get("tpot_sla_ms"),
             "status": t.get("status", "not_started"),
+            "phase": t.get("phase"), "phase_detail": t.get("phase_detail"),
             "started": t.get("started"), "finished": t.get("finished"), "error": t.get("error"),
             "log_path": t.get("log_path") or _latest_case_log(pid, cid),
             "result_dir": os.path.join(RESULTS_DIR, cid),

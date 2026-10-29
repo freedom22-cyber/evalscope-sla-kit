@@ -727,7 +727,7 @@ async function renderProjectDetail(pid){
     const bestTpot = best&&best.best?fmt(best.best.tpot,2):'';
     const bestTps  = best&&best.peakTps!=null?best.peakTps.toFixed(1):'';
     tr.innerHTML=
-      '<td>'+pill(c.status)+'</td>'
+      '<td>'+pill(c.status)+(c.status==='running'&&c.phase?'<div class="mono" style="font-size:10px;color:var(--accent-2);margin-top:3px">'+esc(c.phase)+(c.phase_detail?' · '+esc(c.phase_detail):'')+'</div>':'')+'</td>'
       +'<td><code>'+esc(c.case_id)+'</code></td>'
       +'<td>'+esc(c.dataset)+'</td>'
       +'<td class="mono">'+kfmt(c.input_len)+' / '+kfmt(c.output_len)+'</td>'
