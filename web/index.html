@@ -464,6 +464,21 @@ async function renderCases(){
   const bar=el('div',{cls:'toolbar'});
   bar.append(btn('检测数据集是否生成','search','primary',detectDatasets));
   bar.append(el('span',{cls:'spacer'}));
+  /* 用例搜索：即时过滤表格行（按 ID/数据集/长度/命中率匹配） */
+  const search=el('input',{type:'text',id:'case-search',placeholder:'搜索用例（ID / 数据集 / 长度 / 命中率）…',
+    style:'padding:9px 13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;background:rgba(15,23,42,.6);color:var(--fg);width:280px;font-family:inherit'});
+  search.addEventListener('input',()=>{
+    const q=search.value.trim().toLowerCase();
+    $$('#main tbody tr[data-id]').forEach(tr=>{
+      tr.style.display = (!q || tr.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    });
+    const cnt=$$('#main tbody tr[data-id]').filter(tr=>tr.style.display!=='none').length;
+    const hint=document.getElementById('case-search-count');
+    if(hint) hint.textContent=q?('匹配 '+cnt+' / '+$$('#main tbody tr[data-id]').length+' 个'):'';
+  });
+  bar.append(search);
+  const searchCount=el('span',{cls:'hint',id:'case-search-count',style:'font-size:11px;color:var(--fg-mute)'});
+  bar.append(searchCount);
   bar.append(btn('刷新','refresh','',renderCases));
   m.append(bar);
   const card=el('div',{cls:'card'});
@@ -638,14 +653,25 @@ async function newProject(){
   const nameInp=el('input',{type:'text',id:'np-name',style:'width:100%',placeholder:'如 摸高回归-1027'});
   body.append(nameInp);
   body.append(el('h3',{style:'font-size:13px;margin:16px 0 8px;color:#fff'},'选择要执行的测试用例'));
+  /* 用例搜索：过滤复选框行（隐藏行勾选状态保留，不影响提交） */
+  const ps=el('input',{type:'text',placeholder:'搜索用例…',
+    style:'width:100%;margin-bottom:8px;padding:9px 13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;background:rgba(15,23,42,.6);color:var(--fg);font-family:inherit'});
   const list=el('div',{style:'max-height:360px;overflow:auto;border:1px solid var(--glass-line);border-radius:10px;padding:8px'});
   cases.forEach(c=>{
     const row=el('label',{style:'display:flex;gap:10px;align-items:center;padding:6px 8px;cursor:pointer;border-radius:7px'});
     row.append(el('input',{type:'checkbox',value:c.id,checked:c.enabled!==false}));
     row.append(el('span',{style:'font-size:12.5px'},
       esc(c.id)+'  ('+esc(c.dataset)+' '+kfmt(c.input_len)+'→'+kfmt(c.output_len)+' 命中'+hitfmt(c.hit_rate)+')'));
+    row.dataset.search=(c.id+' '+c.dataset+' '+kfmt(c.input_len)+' '+kfmt(c.output_len)).toLowerCase();
     list.append(row);
   });
+  ps.addEventListener('input',()=>{
+    const q=ps.value.trim().toLowerCase();
+    $$('label',list).forEach(row=>{
+      row.style.display=(!q||row.dataset.search.includes(q))?'':'none';
+    });
+  });
+  body.append(ps);
   body.append(list);
   const selBar=el('div',{cls:'row-actions',style:'margin-top:8px'});
   selBar.append(btn('全选','check','small',()=>$$('input[type=checkbox]',list).forEach(x=>x.checked=true)));
