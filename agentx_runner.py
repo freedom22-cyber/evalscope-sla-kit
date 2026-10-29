@@ -15,7 +15,9 @@
 
 执行流程:
     1. 解析 config.yaml agentx.datasets（每行一个变体:
-       "tag, public_dataset, concurrency [, tokenizer]"）
+       "tag, public_dataset, concurrency [, tokenizer]"；
+       public_dataset 字段也可写 local:<语料目录> 回放本地裁剪语料,
+       目录由 tools/curate_weka_traces.py 生成）
     2. 构建 agentx profile 命令（宿主机直跑，setup.sh 已装 agentx-harness）
     3. url 取 service.url（去掉 /v1/chat/completions 后缀），endpoint 固定
        /v1/chat/completions；tokenizer 取 service.tokenizer_path（本地路径）
@@ -26,6 +28,10 @@
 AgentX 数据集变体（HuggingFace semianalysisai/cc-traces-weka-*）:
     full   semianalysis_cc_traces_weka_062126          # 全量 1M ctx, 135k 请求
     256k   semianalysis_cc_traces_weka_with_subagents_256k  # 256k ctx, 68k 请求
+    本地裁剪语料（tools/curate_weka_traces.py 生成, local:<目录>）:
+    weka8  local:datasets/weka8    # 80 会话 x 8 轮 x ~65k 输入 x ~80% 缓存命中
+                                    # （glm5.3 实测: 810 请求, ISL p50 65.4k,
+                                    #  理论前缀命中 77.75%, 详见 README AgentX 章节）
 """
 import argparse
 import glob
@@ -52,7 +58,7 @@ def load_config(path: str) -> dict:
 
 
 def parse_variant_line(line: str) -> dict:
-    """解析变体行: "tag, public_dataset, concurrency [, tokenizer]"（tokenizer 可选）。"""
+    """解析变体行: "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"。"""
     parts = [p.strip() for p in str(line).split(",")]
     if len(parts) not in (3, 4):
         raise ValueError(f"变体行格式错误（需 3-4 个逗号分隔字段）: {line!r}")
@@ -66,8 +72,37 @@ def parse_variant_line(line: str) -> dict:
         raise ValueError(f"变体行 concurrency 必须是整数: {line!r}")
     if conc_i < 1:
         raise ValueError(f"变体行 concurrency 必须 >= 1: {line!r}")
-    return {"tag": tag, "dataset": dataset, "concurrency": conc_i,
-            "tokenizer": tokenizer, "raw": line}
+    # local:<目录> = 本地裁剪语料（tools/curate_weka_traces.py 生成）
+    local_dir = dataset[len("local:"):] if dataset.startswith("local:") else ""
+    return {"tag": tag, "dataset": dataset, "local_dir": local_dir,
+            "concurrency": conc_i, "tokenizer": tokenizer, "raw": line}
+
+
+def resolve_local_corpus(v: dict) -> dict:
+    """校验 local: 语料并推导回放参数（entries / request-count 上限）。
+
+    entries = 目录里会话 JSON 文件数; request-count 上限取自裁剪工具写的
+    <目录>_stats.json 的 total_requests —— 没有上限时车道会把跑完的短会话
+    回收重放, 挤掉裁剪窗口里的原始轮次。
+    """
+    d = v["local_dir"]
+    if not os.path.isabs(d):
+        d = os.path.join(KIT_ROOT, d)
+    if not os.path.isdir(d):
+        raise ValueError(f"[{v['tag']}] 本地语料目录不存在: {d}"
+                         f"（先用 tools/curate_weka_traces.py 生成）")
+    entries = len(glob.glob(os.path.join(d, "*.json")))
+    if entries == 0:
+        raise ValueError(f"[{v['tag']}] 本地语料目录没有会话 JSON: {d}")
+    stats_path = d.rstrip("/") + "_stats.json"
+    if not os.path.isfile(stats_path):
+        raise ValueError(f"[{v['tag']}] 缺少 {stats_path}（request-count 上限取自其中"
+                         f" total_requests; 请用 tools/curate_weka_traces.py 生成语料）")
+    with open(stats_path, encoding="utf-8") as f:
+        total = int(json.load(f).get("total_requests") or 0)
+    if total < 1:
+        raise ValueError(f"[{v['tag']}] {stats_path} 的 total_requests 无效: {total}")
+    return {"dir": d, "entries": entries, "request_count": total}
 
 
 def resolve_variants(cfg: dict) -> list:
@@ -109,10 +144,48 @@ def build_cmd(cfg: dict, v: dict, concurrency_override: int = None) -> tuple:
         "--endpoint", "/v1/chat/completions",
         "--model", svc["model"],
         "--tokenizer", tokenizer,
+        # tokenizer 写 HuggingFace 名时需要（官方 README 用法; 本地路径不受影响）
+        "--tokenizer-trust-remote-code",
         "--concurrency", str(conc),
-        "--public-dataset", v["dataset"],
-        "--output-artifact-dir", work_dir,
     ]
+    if v["local_dir"]:
+        corpus = resolve_local_corpus(v)
+        # 本地裁剪语料固定用 inferencex-agentx-mvp 场景: 默认 agentx 场景会注入
+        # warmup_requests_per_lane=10 的加速预热 —— 预热回放会真实消耗轮次
+        # （8 轮短语料直接被吃光）, 且高并发时 ~N 条零间隔大 prefill 同时打出,
+        # 排队网关（如 ModelArts）会杀掉排队过久的请求, 单条失败即整体中止。
+        # mvp 场景无预设注入但保留 AGENTIC_REPLAY 回放时序, 下面显式补齐原预设值。
+        cmd += [
+            "--scenario", "inferencex-agentx-mvp",
+            # 本地目录不是场景锁校验的 pinned 公共语料, 必须 override
+            # （聚合结果会标记 submission_valid=false）
+            "--unsafe-override",
+            "--custom-dataset-type", "weka_trace",
+            "--input-file", corpus["dir"],
+            "--num-dataset-entries", str(corpus["entries"]),
+            # 车道回收重放会挤掉裁剪轮次, 用裁剪工具算出的总量封顶
+            "--request-count", str(corpus["request_count"]),
+            # 从第 0 轮回放整个裁剪窗口（预设 0.25~0.75 会跳过短语料大部分轮次）
+            "--trajectory-start-min-ratio", "0",
+            "--trajectory-start-max-ratio", "0",
+            # 不传 ramp 时 80 条车道 t=0 同时派发第 0 轮（全新 ~65k prefill）,
+            # 与预热同款的零间隔突发, 排队网关会杀; 120s 斜坡错开车道起步
+            "--concurrency-ramp-duration", "120",
+            # 回放全长受会话跨度限制（weka8 实测 ~11 分钟, 最长会话 987s）;
+            # 3600 与实测命令一致并留足慢端点余量（mvp 场景不传时自动填 1800）
+            "--benchmark-duration", "3600",
+            "--random-seed", "42",
+            "--failed-request-threshold", "0.10",
+            "--trace-idle-gap-cap-seconds", "300",
+            "--use-server-token-count",
+        ]
+    else:
+        cmd += ["--public-dataset", v["dataset"]]
+    # 服务上下文上限（如 glm5.3 的 204800; 不设置则不传, 由服务端自行拒绝超长）
+    max_ctx = svc.get("max_context_length")
+    if max_ctx:
+        cmd += ["--max-context-length", str(int(max_ctx))]
+    cmd += ["--output-artifact-dir", work_dir]
     # api_key: agentx --api-key 自动加 Authorization: Bearer
     api_key = req.get("api_key") or ""
     if api_key:
@@ -123,8 +196,10 @@ def build_cmd(cfg: dict, v: dict, concurrency_override: int = None) -> tuple:
 def parse_results(work_dir: str) -> dict:
     """解析 output-artifact-dir 里的指标 json，返回关键指标 dict。"""
     out = {}
-    # 找 summary/metrics 类 json
-    for pat in ("**/*summary*.json", "**/*metrics*.json", "**/*result*.json"):
+    # aiperf(agentx-harness) 1.0.7 的指标文件名是 profile_export_aiperf.json
+    # （实测产物里没有 *summary*/*metrics* 命名的文件, 不匹配会漏掉全部指标）
+    for pat in ("**/profile_export_aiperf.json", "**/*summary*.json",
+                "**/*metrics*.json", "**/*result*.json"):
         for p in glob.glob(os.path.join(work_dir, pat), recursive=True):
             try:
                 with open(p, encoding="utf-8") as f:
