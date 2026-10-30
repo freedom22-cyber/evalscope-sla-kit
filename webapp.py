@@ -989,13 +989,16 @@ def api_func_cases():
     for c in cases:
         url = mod.endpoint_url(base_url, c.endpoint)
         hdrs = mod.request_headers(config, c.extra_headers)
-        parts = ["curl -sS"]
+        # curl -d 不带 Content-Type 时默认 x-www-form-urlencoded, OpenAI 兼容层
+        # 只收 JSON 会直接 400; 本机 http_proxy 也不通内网(README 坑 13), 都得补上
+        parts = ["curl -sS", "--noproxy", "'*'"]
         if c.method != "GET":
             parts += ["-X", c.method]
         for k, v in hdrs.items():
             parts += ["-H", f'"{k}: {v}"']
         if c.payload is not None:
             body = mod.compact_json(c.payload)
+            parts += ["-H", '"Content-Type: application/json"']
             parts += ["-d", "'" + body.replace("'", "'\\''") + "'"]
         parts.append(f'"{url}"')
         curl = " ".join(parts)
