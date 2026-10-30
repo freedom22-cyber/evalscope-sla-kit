@@ -1410,8 +1410,41 @@ async function go(view){
 }
 $$('#nav a').forEach(a=>a.onclick=()=>go(a.dataset.view));
 setInterval(()=>{ if(VIEW==='projects'&&CURRENT_PROJECT) renderProjectDetail(CURRENT_PROJECT); },5000);
-/* 3s 刷新仅在有生成任务进行时触发；renderCases 会保留搜索词与勾选状态 */
-setInterval(()=>{ if(VIEW==='cases'){ const g=document.querySelector('[data-gen][disabled]'); if(g) renderCases(); } },3000);
+/* 3s 轮询仅更新生成状态单元格（不重建表格——重建会丢滚动位置，
+   导致生成期间看不到下面的用例）。全部生成结束后做一次完整刷新。 */
+setInterval(async ()=>{
+  if(VIEW!=='cases') return;
+  const g=document.querySelector('[data-gen][disabled]');
+  if(!g) return;   // 无生成任务
+  const r=await api('/api/cases');
+  if(!r.cases) return;
+  const byId={}; r.cases.forEach(c=>byId[c.id]=c);
+  let anyGenerating=false;
+  $$('#main tbody tr[data-id]').forEach(tr=>{
+    const c=byId[tr.dataset.id]; if(!c) return;
+    const genSt=c.dataset_gen_status||'idle', isGen=genSt==='generating';
+    if(isGen) anyGenerating=true;
+    /* 更新数据集状态单元格（第 10 列, thead 定义顺序） */
+    const stTd=tr.cells[10];
+    if(stTd){
+      let html='';
+      if(isGen) html='<span class="pill running">生成中</span>';
+      else if(genSt==='error') html='<span class="pill error" title="'+esc(c.dataset_gen_error||'')+'">生成失败</span>';
+      else if(c.dataset_exists) html='<span class="pill done">已生成</span>'+(c.dataset_shared?' <span class="muted">复用</span>':'');
+      else html='<span class="pill pending">未生成</span>';
+      if(stTd.innerHTML!==html) stTd.innerHTML=html;
+    }
+    /* 更新生成按钮文案与禁用态 */
+    const gb=tr.querySelector('[data-gen]');
+    if(gb){
+      const label=isGen?'生成中…':(c.dataset_exists?'重新生成':'生成');
+      if(gb.textContent!==label) gb.textContent=label;
+      gb.disabled=isGen;
+    }
+  });
+  /* 全部生成结束（无 generating）→ 一次完整刷新收尾 */
+  if(!anyGenerating) renderCases();
+},3000);
 /* 刷新后恢复上次页签（hash 优先, 无 hash 落配置项） */
 go(RENDER[location.hash.slice(1)] ? location.hash.slice(1) : 'config');
 </script>
