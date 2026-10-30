@@ -524,7 +524,8 @@ async function renderCases(){
     const genLabel=isGen?'生成中…':(c.dataset_exists?'重新生成':'生成');
     const hasDs=c.dataset==='gsm8k'||c.dataset==='random';
     const dsCell=hasDs
-      ? ('<span class="mono">'+(c.dataset_num||'默认')+'</span> <button class="small" data-gen="'+c.id+'"'+(isGen?' disabled':'')+'>'+genLabel+'</button>')
+      ? ('<span class="mono">'+(c.dataset_num||'默认')+'</span> <button class="small" data-gen="'+c.id+'"'+(isGen?' disabled':'')+'>'+genLabel+'</button>'
+         +' <button class="small" data-genlog="'+c.id+'" title="查看数据集生成日志">日志</button>')
       : '<span class="muted">—</span>';
     let stCell;
     if(hasDs){
@@ -629,9 +630,18 @@ async function detectDatasets(){ await api('/api/cases'); renderCases(); toast('
 document.addEventListener('click', e=>{
   const g=e.target.closest&&e.target.closest('[data-gen]');
   if(g){ genCase(g.dataset.gen); return; }
+  const gl=e.target.closest&&e.target.closest('[data-genlog]');
+  if(gl){ showGenLog(gl.dataset.genlog); return; }
   const d=e.target.closest&&e.target.closest('[data-del]');
   if(d&&d.tagName==='BUTTON'){ delCase(d.dataset.del); return; }
 });
+
+async function showGenLog(cid){
+  const r=await api('/api/datasets/genlog/'+encodeURIComponent(cid));
+  if(!r.ok){ toast('查询失败: '+(r.error||'')); return; }
+  if(!r.path){ toast('该用例暂无生成日志'); return; }
+  showLog(r.path);
+}
 
 /* ============================ 测试工程 ============================ */
 async function renderProjects(){

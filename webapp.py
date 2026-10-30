@@ -465,6 +465,7 @@ def api_cases():
         gt = _GEN_TASKS.get(c["id"])
         c["dataset_gen_status"] = gt.get("status", "idle") if gt else "idle"
         c["dataset_gen_error"] = gt.get("error") if gt else None
+        c["dataset_gen_log"] = gt.get("log_path") if gt else None
     return {"cases": cases}
 
 
@@ -593,18 +594,37 @@ def api_datasets_generate(payload: dict = Body(default={})):
         for fn, c in todo.items():
             cid = c["id"]
             log_path = os.path.join(LOGS_DIR, f"gen_{cid}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+            _GEN_TASKS[cid] = {"status": "generating", "error": None, "log_path": log_path}
             with open(log_path, "a", encoding="utf-8", buffering=1) as lf:
                 try:
                     lf.write(f"[dataset {cid}] 生成中 num={runner.dataset_number(cfg, c)} force={force}\n")
                     runner.ensure_gsm8k_dataset(cfg, c, force=force, log_handle=lf)
                     lf.write(f"[dataset {cid}] 完成\n")
-                    _GEN_TASKS[cid] = {"status": "done", "error": None}
+                    _GEN_TASKS[cid] = {"status": "done", "error": None, "log_path": log_path}
                 except Exception as e:
                     lf.write(f"[dataset {cid}] 失败: {e}\n")
-                    _GEN_TASKS[cid] = {"status": "error", "error": str(e)}
+                    _GEN_TASKS[cid] = {"status": "error", "error": str(e), "log_path": log_path}
 
     threading.Thread(target=gen_all, daemon=True).start()
     return {"ok": True, "count": len(todo)}
+
+
+@app.get("/api/datasets/genlog/{cid}")
+def api_dataset_genlog(cid: str):
+    """返回用例数据集生成的最新日志路径（供前端查看日志按钮）。
+
+    优先取 _GEN_TASKS 里记录的本次日志；否则找 logs/gen_<cid>_*.log 中最新的。
+    """
+    if _safe_id(cid) is None:
+        return JSONResponse({"ok": False, "error": "非法用例 ID"}, status_code=400)
+    gt = _GEN_TASKS.get(cid) or {}
+    path = gt.get("log_path")
+    if not path or not os.path.exists(path):
+        cands = sorted(glob.glob(os.path.join(LOGS_DIR, f"gen_{cid}_*.log")))
+        path = cands[-1] if cands else None
+    if not path or not os.path.exists(path):
+        return {"ok": True, "path": None, "note": "暂无生成日志"}
+    return {"ok": True, "path": path}
 
 
 # ----- 测试工程 -----
