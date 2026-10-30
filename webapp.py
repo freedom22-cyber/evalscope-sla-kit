@@ -306,6 +306,8 @@ def _run_case(project_id, case_id, cfg, st):
                 log(f"[{case_id}] 确保数据集存在 ...")
                 dataset_path = runner.ensure_gsm8k_dataset(cfg, c, force=False, log_handle=logf)
                 log(f"[{case_id}] 数据集: {dataset_path}")
+                # 摸高前预检: 条数不足直接报错, 不跑到一半 Dataset is empty
+                runner.check_dataset_sufficient(cfg, c, dataset_path)
             if _stopped():
                 _set_task(key, status="stopped", finished=_now())
                 log(f"[{case_id}] 数据集准备后停止")

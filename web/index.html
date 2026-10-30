@@ -945,40 +945,71 @@ async function showLog(path){
   if (_LOG_POLL) { clearInterval(_LOG_POLL); _LOG_POLL = null; }
   $('#dlg-title').textContent='日志: '+path.split('/').slice(-2).join('/');
   const body=$('#dlg-body'); body.innerHTML='';
-  /* 工具栏：行数 + 停止轮询 */
-  const tb=el('div',{style:'display:flex;align-items:center;gap:10px;margin-bottom:10px'});
+  /* 工具栏：行数 + 跳到开头/最新 + 停止轮询 */
+  const tb=el('div',{style:'display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap'});
   const info=el('span',{cls:'muted',style:'font-size:12px'},'加载中…');
+  const headBtn=el('button',{cls:'small'},'⤒ 跳到开头');
+  const tailBtn=el('button',{cls:'small'},'⤓ 跳到最新');
   const stopBtn=el('button',{cls:'small'},'⏸ 停止刷新'); stopBtn.disabled=true;
-  tb.append(info, el('span',{style:'flex:1'}), stopBtn);
+  tb.append(info, el('span',{style:'flex:1'}), headBtn, tailBtn, stopBtn);
   body.append(tb);
   const pre=el('pre',{cls:'log'},'');
   body.append(pre);
   if(!$('#dlg').open) $('#dlg').showModal();
-  let offset=0, total=0, inFlight=false, failCount=0;
+  let offset=0, total=0, inFlight=false, failCount=0, tailMode=true;
+
+  /* 首屏取尾部 TAIL_N 行——性能日志几百上千行, 报错在最后;
+     看从头用「跳到开头」。tail 模式返回的是尾部, offset 从 total-TAIL_N 起。 */
+  const TAIL_N = 2000;
+  async function loadTail(){
+    try{
+      const r=await api('/api/log?path='+encodeURIComponent(path)+'&tail='+TAIL_N);
+      if(!r.ok){ info.textContent=r.error||'读取失败'; return; }
+      total=r.total; offset=Math.max(0, total - (r.lines||[]).length);
+      pre.textContent=(r.lines||[]).join('');
+      pre.scrollTop=pre.scrollHeight;
+      info.textContent = total+' 行' + (offset>0 ? '（尾部 '+r.lines.length+' 行，点上「跳到开头」看全部）' : '');
+      stopBtn.disabled=false;
+    }catch(e){ info.textContent=String(e); }
+  }
+  async function loadHead(){
+    try{
+      const r=await api('/api/log?path='+encodeURIComponent(path)+'&offset=0');
+      if(!r.ok){ info.textContent=r.error||'读取失败'; return; }
+      total=r.total; offset=(r.lines||[]).length;
+      pre.textContent=(r.lines||[]).join('');
+      pre.scrollTop=0;
+      info.textContent = total+' 行' + (offset<total?'（已加载 '+offset+'/'+total+'，滚动到底自动续）':' (已全部加载)');
+      stopBtn.disabled=false;
+    }catch(e){ info.textContent=String(e); }
+  }
+
   async function poll(){
     if(inFlight) return;   // 防重入：慢响应时两次 poll 读同一 offset 会重复追加
     inFlight=true;
     try{
-      const r=await api('/api/log?path='+encodeURIComponent(path)+'&offset='+offset);
-      if(!r.ok){
-        info.textContent=r.error||'读取失败';
-        if(++failCount>=3 && _LOG_POLL){ clearInterval(_LOG_POLL); _LOG_POLL=null;
-          stopBtn.textContent='▶ 恢复刷新'; }
-        return;
+      if(tailMode){   // 尾部模式: 只增量拉新行（从已读 offset 续）
+        const r=await api('/api/log?path='+encodeURIComponent(path)+'&offset='+offset);
+        if(!r.ok){ info.textContent=r.error||'读取失败';
+          if(++failCount>=3 && _LOG_POLL){ clearInterval(_LOG_POLL); _LOG_POLL=null; stopBtn.textContent='▶ 恢复刷新'; }
+          return; }
+        failCount=0;
+        if(r.lines && r.lines.length){
+          const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 60;
+          pre.textContent += r.lines.join('');
+          offset += r.lines.length; total = r.total;
+          if(atBottom) pre.scrollTop = pre.scrollHeight;   // 仅在用户已在底部时自动跟随
+        }
+        info.textContent = total+' 行' + (offset>=total?' (实时跟踪中…)':' (实时跟踪中…)');
+        stopBtn.disabled=false;
       }
-      failCount=0;
-      if(r.lines && r.lines.length){
-        pre.textContent += r.lines.join('');
-        offset += r.lines.length;
-        total = r.total;
-        pre.scrollTop = pre.scrollHeight;
-      }
-      info.textContent = total+' 行' + (offset>=total?' (已全部加载)':' (实时跟踪中…)');
-      stopBtn.disabled=false;
     } finally { inFlight=false; }
   }
-  await poll();
+
+  await loadTail();          // 默认打开即看最新（含报错位置）
   _LOG_POLL = setInterval(poll, 2000);
+  headBtn.onclick = async()=>{ tailMode=false; if(_LOG_POLL){clearInterval(_LOG_POLL);_LOG_POLL=null;} await loadHead(); };
+  tailBtn.onclick = async()=>{ tailMode=true; await loadTail(); if(!_LOG_POLL) _LOG_POLL=setInterval(poll,2000); stopBtn.textContent='⏸ 停止刷新'; };
   stopBtn.onclick = ()=>{
     if(_LOG_POLL){ clearInterval(_LOG_POLL); _LOG_POLL=null; stopBtn.textContent='▶ 恢复刷新'; }
     else { _LOG_POLL=setInterval(poll,2000); stopBtn.textContent='⏸ 停止刷新'; }

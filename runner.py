@@ -221,6 +221,52 @@ def dataset_number(cfg: dict, sc: dict) -> int:
     return int(ds["gsm8k_number"])
 
 
+def sla_dataset_requirement(cfg: dict, sc: dict) -> int:
+    """估算 SLA 摸高全程的数据集消耗量（条数），用于摸高前预检。
+
+    evalscope 摸高每档 probe 后 dataset_offset += number（防跨档 KV 命中），
+    各档 number = 并发 x sla_number_multiplier。档位序列按 evalscope 的
+    倍增+线性混合搜索估算: 从 lower_bound 倍增到 upper_bound 附近，
+    再线性细化。另加 warmup 消耗（每档 warmup_num 条 x 档数）。
+    估算偏保守（宁多勿少），不足时预检直接报错，避免跑到一半 Dataset is empty。
+    """
+    bench = cfg.get("benchmark", {})
+    lo = int(bench.get("sla_lower_bound", 1))
+    hi = int(bench.get("sla_upper_bound", 512))
+    mult = int(bench.get("sla_number_multiplier", 2))
+    warmup = int(bench.get("warmup_num", 10))
+    # 档位序列: 倍增 1,2,4,...,>=lo 后进入 evalscope 的搜索区间
+    levels = []
+    v = max(1, lo)
+    while v < hi:
+        levels.append(v)
+        v = v * 2 if v * 2 <= hi else hi
+    levels.append(hi)
+    # 复测: sla_num_runs>1 时达标档会重跑
+    runs = int(bench.get("sla_num_runs", 1))
+    total = sum(l * mult * max(1, runs) + warmup for l in levels)
+    return total
+
+
+def check_dataset_sufficient(cfg: dict, sc: dict, prompts_path: str) -> None:
+    """摸高前预检: 数据集条数是否够摸高全程消耗。不足则抛错（带修复建议）。"""
+    try:
+        with open(prompts_path, "r", encoding="utf-8") as f:
+            have = sum(1 for _ in f)
+    except OSError:
+        return   # 文件不存在由 ensure 环节处理
+    need = sla_dataset_requirement(cfg, sc)
+    if have < need:
+        raise RuntimeError(
+            f"数据集条数不足: {os.path.basename(prompts_path)} 只有 {have} 条, "
+            f"但 SLA 摸高全程预计消耗约 {need} 条 "
+            f"(下界{cfg['benchmark'].get('sla_lower_bound',1)}~上界{cfg['benchmark'].get('sla_upper_bound',512)} "
+            f"各档 number=并发x{cfg['benchmark'].get('sla_number_multiplier',2)} 累计+每档 warmup)。"
+            f"摸高会中途报 'Dataset is empty'。请把该用例数据集条数提到 {need} 以上"
+            f"(新建用例时指定更大的条数, 或在 config.yaml dataset.gsm8k_number 调大全局默认)。"
+        )
+
+
 def gsm8k_dataset_paths(cfg: dict, sc: dict) -> tuple:
     """返回 (jsonl_path, prompts_path)；文件名规则与 gen_dataset_only.py 一致。
 
@@ -750,6 +796,9 @@ def run_scenario(cfg: dict, sc: dict, dry_run: bool) -> int:
     # random 也本地生成定长数据集（gen_dataset 脚本, prefix_flag=0）
     if sc["dataset"] in ("gsm8k", "random"):
         dataset_path = ensure_gsm8k_dataset(cfg, sc, dry_run)
+        # 摸高前预检: 条数不足直接报错, 不跑到一半 Dataset is empty
+        if not dry_run:
+            check_dataset_sufficient(cfg, sc, dataset_path)
     cmd = build_evalscope_cmd(cfg, sc, dataset_path)
     print("  命令: " + " ".join(shlex.quote(c) for c in cmd))
     if dry_run:
