@@ -699,14 +699,15 @@ async function newProject(){
   const nameInp=el('input',{type:'text',id:'np-name',style:'width:100%',placeholder:'如 摸高回归-1027'});
   body.append(nameInp);
   body.append(el('h3',{style:'font-size:13px;margin:16px 0 8px;color:#fff'},'选择要执行的测试用例'));
-  /* 用例搜索：搜索即收窄选择范围——不匹配行自动取消勾选（所见即所选），
-     避免隐藏行仍带勾选导致创建的工程包含全部用例 */
-  const ps=el('input',{type:'text',placeholder:'搜索用例…（搜索后仅保留匹配项勾选）',
+  /* 用例搜索：纯视觉过滤——只隐藏不匹配行，不取消勾选。
+     勾选跨搜索累积保留（先选 64k 再搜 128k 选一个, 64k 仍保留）。
+     默认不勾选，避免「全选→搜索→创建包含全部」的困惑。 */
+  const ps=el('input',{type:'text',placeholder:'搜索用例…（勾选跨搜索保留）',
     style:'width:100%;margin-bottom:8px;padding:9px 13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;background:rgba(15,23,42,.6);color:var(--fg);font-family:inherit'});
   const list=el('div',{style:'max-height:360px;overflow:auto;border:1px solid var(--glass-line);border-radius:10px;padding:8px'});
   cases.forEach(c=>{
     const row=el('label',{style:'display:flex;gap:10px;align-items:center;padding:6px 8px;cursor:pointer;border-radius:7px'});
-    row.append(el('input',{type:'checkbox',value:c.id,checked:c.enabled!==false}));
+    row.append(el('input',{type:'checkbox',value:c.id}));   // 默认不勾选
     row.append(el('span',{style:'font-size:12.5px'},
       esc(c.id)+'  ('+esc(c.dataset)+' '+kfmt(c.input_len)+'→'+kfmt(c.output_len)+' 命中'+hitfmt(c.hit_rate)+')'));
     row.dataset.search=(c.id+' '+c.dataset+' '+kfmt(c.input_len)+' '+kfmt(c.output_len)).toLowerCase();
@@ -723,7 +724,7 @@ async function newProject(){
     $$('label',list).forEach(row=>{
       const match=!q||row.dataset.search.includes(q);
       row.style.display=match?'':'none';
-      if(q&&!match) row.querySelector('input[type=checkbox]').checked=false;
+      // 不动 checked——勾选跨搜索保留
     });
     updateSelCount();
   });
