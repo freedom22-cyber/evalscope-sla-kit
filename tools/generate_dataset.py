@@ -7,6 +7,13 @@ import torch
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# 语料与挑选记录固定放本脚本同目录——不依赖 cwd（webapp 从 kit 根调起时
+# 相对路径 ./GSM8K.jsonl 会 FileNotFoundError）
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+GSM8K_JSONL = os.path.join(_TOOLS_DIR, "GSM8K.jsonl")
+PICKED_IDS = os.path.join(_TOOLS_DIR, "picked_ids.txt")
+
+
 def create_dataset(tokenizer_path: str, input_len: int, number: int, prefix_flag):
 
     logging.info(f"加载tokenizer: {tokenizer_path}")
@@ -19,7 +26,7 @@ def create_dataset(tokenizer_path: str, input_len: int, number: int, prefix_flag
     while len(output_samples) < number and attempts < max_attempts:
         attempts += 1
         # 随机选择一条文本
-        picker = DataPicker("./GSM8K.jsonl", "./picked_ids.txt", prefix_flag)
+        picker = DataPicker(GSM8K_JSONL, PICKED_IDS, prefix_flag)
         raw_text = picker.pick_one()
         if raw_text is None:
             break
