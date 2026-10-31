@@ -30,7 +30,7 @@ evalscope_sla_kit/
 ├── scripts/swe/        # swe_pro 驱动脚本的归档副本（只存档不执行, live 跑的是原件）
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI，端口 8300）
-├── web/index.html      # Web 控制台前端（五页签单页应用，深色玻璃拟态）
+├── web/index.html      # Web 控制台前端（八页签单页应用，深色玻璃拟态）
 ├── tools/              # gsm8k 数据集生成 / jsonl→prompts / weka 裁剪 / 守护脚本 / BFCL 入口 / SWE 工具副本
 ├── datasets/           # 生成的数据集（按文件名复用；weka 本地语料也放这里）
 ├── results/            # 摸高 + 精度 + 功能 + AgentX + BFCL 输出
@@ -43,7 +43,7 @@ evalscope_sla_kit/
 python3 webapp.py --port 8300     # 浏览器打开 http://<主机IP>:8300
 ```
 
-五个页签（深色玻璃拟态 UI，Fira Sans/Code 字体，Lucide SVG 图标）：
+八个页签（深色玻璃拟态 UI，Fira Sans/Code 字体，Lucide SVG 图标）：
 
 ### 1. 配置项
 - 服务 URL / 模型名 / Tokenizer 路径 / API Key

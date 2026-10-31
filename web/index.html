@@ -129,6 +129,12 @@
   .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
   .toolbar .spacer{flex:1}
 
+  /* agent 评测页签内的二级切换（分段控件，样式对齐 .nav a.active） */
+  .subtabs{display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
+  .subtabs button.active{background:linear-gradient(135deg,rgba(34,197,94,.16),rgba(56,189,248,.08));
+        border-color:rgba(34,197,94,.45);color:#fff}
+  .subtabs button.active svg{stroke:var(--accent)}
+
   pre.log{background:rgba(9,14,26,.92);color:#cbd5e1;padding:16px;border-radius:12px;max-height:70vh;
           overflow:auto;font-size:12px;line-height:1.6;white-space:pre-wrap;border:1px solid var(--glass-line);
           font-family:"Fira Code",Menlo,Consolas,monospace}
@@ -223,6 +229,7 @@
       <a data-view="functional"><span class="ico" data-ic="compass"></span><span>功能测试</span></a>
       <a data-view="accuracy"><span class="ico" data-ic="target"></span><span>精度测试</span></a>
       <a data-view="agentx"><span class="ico" data-ic="bolt"></span><span>AgentX 回放</span></a>
+      <a data-view="agent"><span class="ico" data-ic="braces"></span><span>agent评测</span></a>
     </nav>
     <div class="foot">FastAPI · 端口 8300</div>
   </aside>
@@ -242,6 +249,8 @@ const ICONS = {
   compass:'<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
   target:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   bolt:'<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+  braces:'<path d="M8 3H7a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-4c0-1.1.9-2 2-2v0a2 2 0 0 0-2-2V5a2 2 0 0 0-2-2h-1"/>',
+  bug:'<path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-8"/><path d="M6.53 9C4.6 9.2 3 10.8 3 13a3 3 0 0 0 3 3h1"/><path d="M17.47 9c1.9.2 3.5 1.8 3.5 4a3 3 0 0 1-3 3h-1"/>',
   play:'<polygon points="6 3 20 12 6 21 6 3"/>',
   stop:'<rect x="5" y="5" width="14" height="14" rx="2"/>',
   refresh:'<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
@@ -438,13 +447,11 @@ async function testConnection(){
   const url=$('#cfg-url').value;
   if(!url){ toast('请先填写服务 URL'); return; }
   const b=$('#btn-testconn'); if(b){ b.disabled=true; }
-  const base=url.replace(/\/v1\/.*$/,'');
-  try{
-    const r=await fetch(base+'/v1/models',{signal:AbortSignal.timeout(8000)});
-    if(r.ok){ const d=await r.json(); const models=(d.data||[]).map(x=>x.id).join(', ');
-      toast('连接成功，模型: '+(models||'(空)')); }
-    else toast('服务响应 '+r.status+'（可能需要认证）');
-  }catch(e){ toast('连接失败: '+(e.name==='TimeoutError'?'超时':e.message)); }
+  /* 走后端探测 (webapp 容器 → 服务, 与真实评测同一网络路径)。浏览器直连会因
+     浏览器代理/本机到目标端口不通而误报超时 (2026-10-31 实锤: dsv41@8181)。 */
+  const d=await api('/api/service/test',{method:'POST',body:JSON.stringify({url})});
+  if(d.ok) toast('连接成功'+(d.latency_ms!=null?(' ('+d.latency_ms+'ms)'):'')+'，模型: '+((d.models||[]).join(', ')||'(空)'));
+  else toast('连接失败: '+(d.error||('HTTP '+d.status)));
   if(b) b.disabled=false;
 }
 function field(label,id,val,hint='',type='text'){
@@ -1118,22 +1125,25 @@ document.addEventListener('click', e=>{
     const curls=card&&card._curls;
     const idx=+b.dataset.curl;
     if(curls&&curls[idx]){
-      const text=curls[idx];
-      // 优先 Clipboard API（HTTPS），fallback execCommand（HTTP）
-      if(navigator.clipboard&&navigator.clipboard.writeText){
-        navigator.clipboard.writeText(text).then(()=>{ toast('curl 已复制到剪贴板'); b.textContent='已复制'; setTimeout(()=>b.textContent='复制 curl',1500); })
-          .catch(()=>{ fallbackCopy(text,b); });
-      } else {
-        fallbackCopy(text,b);
-      }
+      copyText(curls[idx], b, 'curl');
     }
   }
 });
-function fallbackCopy(text,btn){
+/* 通用复制: Clipboard API 优先（HTTPS）, fallback execCommand（HTTP）; label 用于 toast 文案 */
+function copyText(text, b, label='命令'){
+  const done=()=>{ toast(label+' 已复制到剪贴板'); b.textContent='已复制';
+    setTimeout(()=>b.textContent='复制 '+label,1500); };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text,b,label));
+  } else {
+    fallbackCopy(text,b,label);
+  }
+}
+function fallbackCopy(text,btn,label='curl'){
   const ta=document.createElement('textarea');
   ta.value=text; ta.style.position='fixed'; ta.style.left='-9999px';
   document.body.append(ta); ta.select();
-  try { document.execCommand('copy'); toast('curl 已复制到剪贴板'); btn.textContent='已复制'; setTimeout(()=>btn.textContent='复制 curl',1500); }
+  try { document.execCommand('copy'); toast(label+' 已复制到剪贴板'); btn.textContent='已复制'; setTimeout(()=>btn.textContent='复制 '+label,1500); }
   catch(e) { toast('复制失败，请手动选择'); }
   ta.remove();
 }
@@ -1433,16 +1443,487 @@ async function stopAgentX(){
   await refreshAgentXStatus();
 }
 
+/* ============================ agent 评测（BFCL + SWE-bench_Pro 合并页签） ============================ */
+let AGENT_SUB='bfcl';   // 当前子面板: 'bfcl' | 'swe'（初始化/刷新时由 hash #agent-bfcl/#agent-swe 定位）
+
+async function renderAgent(){
+  const m=$('#main'); m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'agent评测'),
+    el('div',{cls:'sub'},'agent 能力评测合集，二级切换两个子面板：BFCL 函数调用（可运行/停止）与 SWE-bench_Pro（监控 + 启停，经宿主机桥接守护）。切换子面板会停掉另一侧的轮询链，任一时刻只有活跃子面板在轮询')));
+  const seg=el('div',{cls:'subtabs',id:'agent-subtabs'});
+  const bfclBtn=btn('BFCL 函数调用','braces','small',()=>goAgentSub('bfcl')); bfclBtn.id='agent-sub-btn-bfcl';
+  const sweBtn=btn('SWE-bench_Pro','bug','small',()=>goAgentSub('swe')); sweBtn.id='agent-sub-btn-swe';
+  seg.append(bfclBtn, sweBtn);
+  m.append(seg);
+  m.append(el('div',{id:'agent-sub'}));   // 子面板容器（renderBFCL/renderSWE 渲染到这里）
+  await goAgentSub(AGENT_SUB);
+}
+async function goAgentSub(sub){
+  AGENT_SUB = (sub==='swe') ? 'swe' : 'bfcl';
+  /* 切子面板前停掉两条评测轮询链（句柄式 poller），防止两条 60s/6s 链同时跑或残留叠加 */
+  stopPoller('bfcl'); stopPoller('swe');
+  const panel=$('#agent-sub');
+  if(!panel){ await renderAgent(); return; }   // 外壳不在（初始化竞态兜底，重建后递归一次即到位）
+  /* hash 记录子面板: #agent-bfcl / #agent-swe（agent 页签的 hash 统一在这里管，go() 不再覆写） */
+  if(location.hash!==('#agent-'+AGENT_SUB)) history.replaceState(null,'','#agent-'+AGENT_SUB);
+  $$('#agent-sub-btn-bfcl,#agent-sub-btn-swe').forEach(b=>b.classList.remove('active'));
+  const activeBtn=$('#agent-sub-btn-'+AGENT_SUB);
+  if(activeBtn) activeBtn.classList.add('active');
+  panel.innerHTML='';
+  if(AGENT_SUB==='swe') await renderSWE();
+  else await renderBFCL();
+}
+
+/* ============================ BFCL 函数调用（agent 评测子面板） ============================ */
+let BFCL_ENABLED = [];
+
+async function renderBFCL(){
+  const m=$('#agent-sub'); if(!m) return; m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'BFCL 函数调用'),
+    el('div',{cls:'sub'},'Berkeley Function-Calling Leaderboard v4（evalscope bfcl_v4 适配器）：评函数调用能力，输出 per-subset acc 与官方公式 Overall = Agentic×40% + Multi-Turn×30% + Live×10% + Non-Live×10% + Hallucination×10%（未跑类别按 0 计权）')));
+  const bar=el('div',{cls:'toolbar'});
+  const runBtn=btn('运行 BFCL','play','primary',()=>runBFCL(false)); runBtn.id='bfcl-run-btn';
+  bar.append(runBtn);
+  const stopBtn=btn('停止','stop','danger',stopBFCL); stopBtn.id='bfcl-stop-btn'; stopBtn.disabled=true;
+  bar.append(stopBtn);
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','small',renderBFCL));
+  m.append(bar);
+
+  /* 子任务选择卡（按类别分组; web_search/memory 默认不勾, 有外部依赖） */
+  const cfgCard=el('div',{cls:'card',id:'bfcl-cfg-card'});
+  m.append(cfgCard);
+  await renderBFCLConfig();
+
+  /* 运行参数卡 */
+  const runCard=el('div',{cls:'card'});
+  runCard.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行参数'),
+    el('span',{cls:'hint'}, '留空使用 config.yaml bfcl 段默认值')));
+  const rg=el('div',{cls:'grid3'});
+  rg.append(field('样本上限 (--limit)','bfcl_limit','','冒烟用，每个子集只评 N 条；留空=全量','number'));
+  rg.append(field('并发 (batch_size)','bfcl_batch','','评测并发，默认 10','number'));
+  rg.append(field('temperature','bfcl_temp','','采样温度，默认 0','number'));
+  runCard.append(rg);
+  runCard.append(el('div',{cls:'row-actions'},
+    btn('用勾选子任务和参数运行','play','primary',()=>runBFCL(true))));
+  m.append(runCard);
+
+  m.append(el('div',{id:'bfcl-status-card'}));
+  m.append(el('div',{id:'bfcl-report-card'}));
+  await refreshBFCLStatus();
+}
+
+async function renderBFCLConfig(){
+  const card=$('#bfcl-cfg-card'); if(!card) return;
+  card.innerHTML='';
+  const r=await api('/api/bfcl/config');
+  if(!r.ok){ card.append(el('div',{cls:'muted'},'配置加载失败: '+(r.error||''))); return; }
+  BFCL_ENABLED = r.enabled||[];
+  const total=(r.categories||[]).reduce((a,c)=>a+c.subsets.length,0);
+  card.append(el('h2',{}, iconEl('braces'), el('span',{},'选择子任务'),
+    el('span',{cls:'hint'}, BFCL_ENABLED.length+'/'+total+' 个默认启用')));
+  (r.categories||[]).forEach(cat=>{
+    const grp=el('div',{style:'margin-bottom:14px'});
+    grp.append(el('div',{cls:'hint',style:'margin-bottom:6px;font-weight:600'},cat.name+(cat.note?(' · '+esc(cat.note)):'')));
+    const grid=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px'});
+    cat.subsets.forEach(ds=>{
+      const on=BFCL_ENABLED.includes(ds);
+      const row=el('label',{style:'display:flex;gap:8px;align-items:center;padding:7px 11px;cursor:pointer;border:1px solid var(--glass-line);border-radius:9px;transition:background .15s'});
+      row.innerHTML='<input type="checkbox" value="'+esc(ds)+'" '+(on?'checked':'')+' class="bfcl-ds-chk" style="accent-color:var(--accent)"><span class="mono" style="font-size:12px">'+esc(ds)+'</span>';
+      row.addEventListener('mouseenter',()=>row.style.background='rgba(255,255,255,.04)');
+      row.addEventListener('mouseleave',()=>row.style.background='');
+      grid.append(row);
+    });
+    grp.append(grid);
+    card.append(grp);
+  });
+  const ops=el('div',{cls:'row-actions'});
+  ops.append(btn('全选','check','small',()=>$$('.bfcl-ds-chk').forEach(x=>x.checked=true)));
+  ops.append(btn('恢复默认勾选','refresh','small',()=>$$('.bfcl-ds-chk').forEach(x=>x.checked=BFCL_ENABLED.includes(x.value))));
+  card.append(ops);
+  card.append(el('div',{cls:'hint',style:'margin-top:10px'},
+    '目标: '+esc(r.model||'-')+' @ '+esc(r.url||'-')+' · 评测跑在 '+esc(r.dispatch||'-')+'（'+esc(r.venv_python||'')+'）'));
+}
+
+async function refreshBFCLStatus(){
+  const st=await api('/api/bfcl/status');
+  if(!$('#bfcl-status-card')) return;
+  const running=st.status==='running';
+  const rb=$('#bfcl-run-btn'), sb=$('#bfcl-stop-btn');
+  if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
+  statusCard('bfcl-status-card', st, running);
+  if(running){ pollStatus('bfcl', async()=>{ await refreshBFCLStatus(); await loadBFCLReport(); },6000); }
+  else { await loadBFCLReport(); }
+}
+async function loadBFCLReport(){
+  const r=await api('/api/bfcl/report');
+  reportCard('bfcl-report-card', r, 'braces', '暂无 BFCL 结果，勾选子任务后点运行');
+}
+async function runBFCL(withParams){
+  const selected=$$('.bfcl-ds-chk:checked').map(x=>x.value);
+  if(!selected.length){ toast('请至少勾选一个子任务'); return; }
+  let body={subsets:selected};
+  if(withParams){
+    const lim=$('#cfg-bfcl_limit').value;
+    if(lim) body.limit=+lim;
+    const batch=$('#cfg-bfcl_batch').value;
+    if(batch) body.batch_size=+batch;
+    const temp=$('#cfg-bfcl_temp').value;
+    if(temp!=='') body.temperature=+temp;
+  }
+  const r=await api('/api/bfcl/run',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok) toast('BFCL 评测已启动 ('+selected.length+' 个子任务)'); else toast('启动失败: '+(r.error||''));
+  await refreshBFCLStatus();
+}
+async function stopBFCL(){
+  const r=await api('/api/bfcl/stop',{method:'POST',body:'{}'});
+  toast(r.ok?'已停止 BFCL':('停止失败: '+(r.error||'')));
+  await refreshBFCLStatus();
+}
+
+/* ============================ SWE-bench_Pro（agent 评测子面板） ============================ */
+let SWE_CFG=null;   // /api/swe/config 缓存（启动表单默认值）
+async function renderSWE(){
+  const m=$('#agent-sub'); if(!m) return; m.innerHTML='';
+  m.append(el('div',{cls:'page-head'}, el('h1',{},'SWE-bench_Pro 精度'),
+    el('div',{cls:'sub'},'agentic 代码补丁评测（ScaleAI/SWE-bench_Pro，642 实例）：模型生成补丁 → 每实例独立 amd64 沙箱容器跑金标测试 → resolved 率。全量评测由 swe_pro 目录的分批驱动负责；本页签监控 + 启停（启停命令经宿主机桥接守护执行，双驱动护栏防撞车）')));
+  const bar=el('div',{cls:'toolbar'});
+  bar.append(el('span',{cls:'hint'},'监控 + 启停 · live 产物在 /mnt/sfs_turbo/c00803992/swe_pro（勿移动）'));
+  bar.append(el('span',{cls:'spacer'}));
+  bar.append(btn('刷新','refresh','small',renderSWE));
+  m.append(bar);
+  m.append(el('div',{id:'swe-run-card'}));
+  m.append(el('div',{id:'swe-status-card'}));
+  m.append(el('div',{id:'swe-agg-card'}));
+  m.append(el('div',{id:'swe-batches-card'}));
+  m.append(el('div',{id:'swe-rerun-card'}));
+  await refreshSWEStatus();
+  await loadSWEAggregate();
+  await loadSWEBatches();
+  await loadSWERerun();
+}
+function pctBar(pct){
+  const p=Math.max(0,Math.min(100,pct||0));
+  return '<div style="background:var(--glass-line);border-radius:6px;height:8px;overflow:hidden;margin-top:6px">'
+    +'<div style="width:'+p+'%;height:100%;background:var(--accent)"></div></div>';
+}
+function procMark(v){
+  if(!v||v.running===null||v.running===undefined) return '<span class="muted">宿主侧不可见</span>';
+  return v.running?'<span class="pill done">运行中</span>':'<span class="pill error">未运行</span>';
+}
+async function refreshSWEStatus(){
+  const st=await api('/api/swe/status');
+  if(!$('#swe-status-card')) return;
+  buildSWERunCard(st);
+  buildSWEStatusCard(st);
+  const running=sweRunning(st);
+  pollStatus('swe', async()=>{
+    await refreshSWEStatus();
+    await loadSWEBatches();
+    if(!running){ await loadSWEAggregate(); await loadSWERerun(); }
+  }, running?20000:60000);
+}
+/* 运行口径 = 桥接状态（宿主侧看驱动/eval）∪ 容器口径进程探测（eval/批内脚本） */
+function sweRunning(st){
+  if(!st||!st.ok) return false;
+  const br=(st.bridge||{}).state||{};
+  const procs=st.processes||{};
+  return !!(br.driver_running || br.eval_running
+    || (procs.evalscope_eval&&procs.evalscope_eval.running===true)
+    || (procs.run_swe_bench_pro&&procs.run_swe_bench_pro.running===true));
+}
+function _wl(v){ return v===true?'<span class="pill done">运行中</span>'
+  :(v===false?'<span class="pill error">未运行</span>':'<span class="muted">不可见</span>'); }
+function buildSWERunCard(st){
+  const card=$('#swe-run-card'); if(!card) return;
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('play'), el('span',{},'运行控制'),
+    el('span',{cls:'hint'},'启停命令写入 swe_pro/webctl/，由宿主机桥接守护 tools/swe_web_bridge.py 执行')));
+  const running=sweRunning(st);
+  const br=(st&&st.bridge)||{};
+  const online=!!br.online;
+  const bstate=br.state||{};
+  const kv=el('div',{cls:'kv'});
+  kv.append(el('div',{cls:'k'},'评测状态'), el('div',{cls:'v',html:
+    running?'<span class="pill running">运行中</span>':'<span class="pill not_started">已停止</span>'}));
+  kv.append(el('div',{cls:'k'},'宿主桥接'), el('div',{cls:'v',html:
+    online?'<span class="pill done">在线</span>'+(br.state_age_s!=null?(' <span class="muted">'+br.state_age_s+'s 前心跳</span>'):'')
+      :'<span class="pill error">离线</span>'}));
+  const la=bstate.last_action;
+  if(la) kv.append(el('div',{cls:'k'},'最近动作'), el('div',{cls:'v'},
+    (la.at||'')+' · '+(la.type||'')+(la.detail?(' · '+esc(String(la.detail).split('\n')[0].slice(0,120))):'')));
+  const watch=bstate.watchers||{};
+  kv.append(el('div',{cls:'k'},'看守'), el('div',{cls:'v',html:
+    'staged_watch '+_wl(watch.staged_watch)+' · review_guard '+_wl(watch.review_guard)}));
+  c.append(kv);
+  const ops=el('div',{cls:'row-actions'});
+  const runB=btn('启动评测','play','primary',openSweRunDialog); runB.id='swe-run-btn';
+  runB.disabled=running||!online;
+  const stopB=btn('停止评测','stop','danger',stopSWE); stopB.id='swe-stop-btn';
+  stopB.disabled=!running||!online;
+  ops.append(runB, stopB);
+  c.append(ops);
+  if(!online){
+    c.append(el('div',{cls:'hint',style:'margin-top:8px;color:var(--destructive)'},
+      '宿主机桥接未运行，启动/停止不可用。宿主机执行: bash scripts/start_web.sh（或 setsid nohup python3 tools/swe_web_bridge.py >> logs/swe_web_bridge.log 2>&1 &）'));
+  }
+  card.append(c);
+}
+async function openSweRunDialog(){
+  if(!SWE_CFG){
+    const r=await api('/api/swe/config');
+    if(r.ok) SWE_CFG=r; else { toast('配置加载失败: '+(r.error||'')); return; }
+  }
+  const cfg=SWE_CFG;
+  const d=cfg.saved_params||{}, def=cfg.defaults||{};
+  const so=(d.start_offset!=null?d.start_offset:(def.start_offset!=null?def.start_offset:0));
+  const win=(d.window!=null?d.window:(def.window!=null?def.window:32));
+  const conc=(d.concurrency!=null?d.concurrency:(def.concurrency!=null?def.concurrency:16));
+  const keep=(d.keep_images===true);
+  const lim=(d.limit!=null?d.limit:'');
+  const resume=cfg.resume||{};
+  $('#dlg-title').textContent='启动 SWE-bench_Pro 评测';
+  const body=$('#dlg-body'); body.innerHTML='';
+  const modeF=el('div',{cls:'field'});
+  modeF.innerHTML='<label>模式</label>'
+    +'<div style="display:flex;gap:16px;align-items:center;padding:6px 0;flex-wrap:wrap">'
+    +'<label style="cursor:pointer"><input type="radio" name="swe-mode" value="full" '+(d.mode!=='rerun'?'checked':'')+'> 继续全量（分批驱动）</label>'
+    +'<label style="cursor:pointer"><input type="radio" name="swe-mode" value="rerun" '+(d.mode==='rerun'?'checked':'')+'> 补跑队列（rerun_ids.txt）</label>'
+    +'</div>'
+    +'<span class="hint">'+esc((resume.note?('断点: '+resume.note+' · '):'')+'补跑队列 '+(cfg.rerun_queue_count!=null?cfg.rerun_queue_count:'-')+' 条')+'</span>';
+  body.append(modeF);
+  const grid=el('div',{cls:'grid3'});
+  const fOffset=field('起始偏移 (START_OFFSET)','swe_start_offset',so,'断点续跑默认值，0-'+((cfg.total_instances||642)-1),'number');
+  const fWindow=field('每批实例数 (WINDOW)','swe_window',win,'1-64，默认 '+(def.window||32),'number');
+  const fConc=field('批内并发 (CONCURRENCY)','swe_concurrency',conc,'1-32，默认 '+(def.concurrency||16),'number');
+  const fLimit=field('总条数上限 (TOTAL)','swe_limit',lim,'留空=全部 642；冒烟用','number');
+  grid.append(fOffset, fWindow, fConc, fLimit);
+  body.append(grid);
+  const keepF=el('div',{cls:'field'});
+  keepF.innerHTML='<label style="display:flex;gap:8px;align-items:center;cursor:pointer">'
+    +'<input type="checkbox" id="swe-keep-images" '+(keep?'checked':'')+' style="accent-color:var(--accent)">'
+    +'<span>保留沙箱镜像（KEEP_IMAGES=1，默认批末 prune 回收磁盘）</span></label>';
+  body.append(keepF);
+  /* 仅全量模式生效的字段（补跑模式只用并发） */
+  const fullFields=[fOffset, fWindow, fLimit, keepF];
+  const syncMode=()=>{
+    const mode=(document.querySelector('input[name="swe-mode"]:checked')||{}).value||'full';
+    fullFields.forEach(f=>f.style.display=(mode==='full'?'':'none'));
+  };
+  body.querySelectorAll('input[name="swe-mode"]').forEach(r=>r.addEventListener('change',syncMode));
+  syncMode();
+  const ops=el('div',{cls:'row-actions'});
+  const cancelB=btn('取消','arrowLeft','',()=>$('#dlg').close());
+  const startB=btn('确认启动','play','primary',()=>runSWEFromDialog());
+  ops.append(cancelB, startB);
+  body.append(ops);
+  if(!$('#dlg').open) $('#dlg').showModal();
+}
+async function runSWEFromDialog(){
+  const mode=(document.querySelector('input[name="swe-mode"]:checked')||{}).value||'full';
+  const body={mode:mode};
+  if(mode==='full'){
+    body.start_offset=+$('#cfg-swe_start_offset').value||0;
+    const w=$('#cfg-swe_window').value; if(w) body.window=+w;
+    const cb=$('#cfg-swe_concurrency').value; if(cb) body.concurrency=+cb;
+    const lim=$('#cfg-swe_limit').value; if(lim) body.limit=+lim;
+    const keep=$('#swe-keep-images'); if(keep&&keep.checked) body.keep_images=true;
+  }else{
+    const cb=$('#cfg-swe_concurrency').value; if(cb) body.concurrency=+cb;
+  }
+  const sum=(mode==='full')
+    ?('继续全量：从 offset '+body.start_offset+' 起，每批 '+(body.window||32)+' 实例、批内并发 '+(body.concurrency||16)
+      +(body.limit?('，总条数上限 '+body.limit):'')+(body.keep_images?'，保留镜像':''))
+    :('补跑队列：rerun_ids.txt 清单分份顺序跑，批内并发 '+(body.concurrency||16));
+  if(!confirm('确认启动 SWE-bench_Pro 评测？\n\n'+sum+'\n\n启动前若已有评测进程在跑会被护栏拒绝。')) return;
+  const r=await api('/api/swe/run',{method:'POST',body:JSON.stringify(body)});
+  if(r.ok){
+    toast('启动命令已下发（桥接执行中，稍候刷新）');
+    SWE_CFG=null;   // 下次打开表单重新拉配置（含新断点）
+    $('#dlg').close();
+  }else{
+    toast('启动失败: '+(r.error||''));
+  }
+  await refreshSWEStatus();
+  setTimeout(()=>refreshSWEStatus(), 5000);
+}
+async function stopSWE(){
+  if(!confirm('确认停止 SWE-bench_Pro 评测？\n\n停止序列：SIGKILL 驱动/评测进程（保数据）→ 清理 sandbox-* 沙箱容器 → 抢救数据。\n当前批未完成实例将被丢弃；已评分数据保留并自动进入补跑队列。')) return;
+  const r=await api('/api/swe/stop',{method:'POST',body:'{}'});
+  if(r.ok) toast('停止命令已下发（桥接执行中，稍候刷新查看停止报告）');
+  else toast('停止失败: '+(r.error||''));
+  await refreshSWEStatus();
+  setTimeout(()=>refreshSWEStatus(), 6000);
+}
+function buildSWEStatusCard(st){
+  const card=$('#swe-status-card'); if(!card) return;
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('bug'), el('span',{},'评测状态'),
+    el('span',{cls:'hint'}, st&&st.collected_at?('采集 '+esc(st.collected_at)):'')));
+  if(!st||!st.ok){
+    c.append(el('div',{cls:'muted'},'状态加载失败: '+(st&&st.error||'')));
+    card.append(c); return;
+  }
+  const kv=el('div',{cls:'kv'});
+  const b=st.batches||{};
+  let batchV='<span class="muted">-</span>';
+  if(b.current){
+    batchV='offset='+b.current.offset+' / count='+b.current.count+' '
+      +(b.current.done?'<span class="pill done">已完成</span>':'<span class="pill running">进行中</span>')
+      +(b.current.started?(' <span class="muted">开始于 '+esc(b.current.started)+'</span>'):'');
+  }
+  kv.append(el('div',{cls:'k'},'当前批'), el('div',{cls:'v',html:batchV}));
+  kv.append(el('div',{cls:'k'},'批次'), el('div',{cls:'v'},
+    (b.finished_count!=null?b.finished_count:'-')+' 批完成 · window '+(b.window||'-')
+    +' · total '+(b.total||'-')+(b.all_done?' · 全部完成':'')));
+  const p=st.progress;
+  let progV='<span class="muted">无进度行（当前批日志缺失或尚未开始评）</span>';
+  if(p){
+    progV=esc(p.n+'/'+p.total)+'（'+p.pct+'%）'
+      +(p.overall_total?(' · 全量 '+p.overall_n+'/'+p.overall_total):'')
+      +' · 已跑 '+esc(p.elapsed||'-')+' · ETA '+esc(p.eta||'-')+' · '+esc(p.rate)+'s/it'
+      +(p.ts?(' @'+esc(p.ts)):'')+pctBar(p.pct);
+  }
+  kv.append(el('div',{cls:'k'},'进度'), el('div',{cls:'v',html:progV}));
+  const rc=st.eval_rc||{};
+  let rcV;
+  if(!rc.exists){ rcV='<span class="muted">尚无记录（当前批未结束属正常）</span>'; }
+  else if(rc.last&&rc.last.rc!==0){ rcV='<span class="pill error">rc='+rc.last.rc+'</span> offset='+rc.last.offset+'（evalscope 异常退出，review 数据可能被事务性丢弃）'; }
+  else if(rc.last){ rcV='<span class="pill done">rc=0</span> offset='+rc.last.offset+'（正常结束）'; }
+  else{ rcV='<span class="muted">无记录行</span>'; }
+  if(rc.crash_offsets&&rc.crash_offsets.length)
+    rcV+='<br><span class="muted">历史崩溃批: '+esc(rc.crash_offsets.join(', '))+'</span>';
+  kv.append(el('div',{cls:'k'},'崩溃标记'), el('div',{cls:'v',html:rcV}));
+  const procs=st.processes||{};
+  const procRow=[
+    ['run_all_batches','分批驱动'],['evalscope_eval','evalscope eval'],
+    ['run_swe_bench_pro','批内脚本'],['staged_watch','staged_watch 看守'],
+    ['review_guard','review_guard'],['docker_relay','docker relay']
+  ].map(([k,label])=>label+': '+procMark(procs[k])).join('<br>');
+  kv.append(el('div',{cls:'k'},'进程'), el('div',{cls:'v',html:procRow}));
+  const bf=st.binfmt||{};
+  kv.append(el('div',{cls:'k'},'binfmt qemu'), el('div',{cls:'v',html:
+    bf.visible?(bf.registered?'<span class="pill done">已注册</span> '+esc(bf.flags||'')+' · '+esc(bf.interpreter||''):'<span class="pill error">未注册</span>')
+    :'<span class="muted">容器内不可见</span>'}));
+  const dk=st.disk||{};
+  kv.append(el('div',{cls:'k'},'磁盘'), el('div',{cls:'v',html:
+    dk.visible?(esc(dk.avail||'-')+' 可用（'+esc(dk.used_pct||'-')+' 已用）'):'<span class="muted">容器内不可见</span>'}));
+  const rr=st.rerun||{};
+  kv.append(el('div',{cls:'k'},'补跑队列'), el('div',{cls:'v'},
+    (rr.count!=null?rr.count:'-')+' 条（见下方补跑队列卡）'));
+  c.append(kv);
+  if(st.namespace==='container'){
+    c.append(el('div',{cls:'hint',style:'margin-top:10px'},
+      '注: 控制台跑在 ais-bench 容器内，宿主侧进程（分批驱动/review_guard）与 binfmt/磁盘显示“不可见”，完整口径在宿主机执行: python3 swe_runner.py status'));
+  }
+  card.append(c);
+}
+function parseAggLines(lines){
+  const out={summary:null,rows:[],tail:[]};
+  for(const ln of lines||[]){
+    let m=String(ln).match(/instances scored:\s*(\d+)\/(\d+)\s+resolved:\s*(\d+)\s+acc:\s*([\d.]+)/);
+    if(m){ out.summary={scored:+m[1],total:+m[2],resolved:+m[3],acc:+m[4]}; continue; }
+    m=String(ln).match(/^(\S+)\s+(\d+)\s+(\d+)\s+([\d.]+)$/);
+    if(m){ out.rows.push({repo:m[1],resolved:+m[2],total:+m[3],acc:+m[4]}); continue; }
+    if(String(ln).trim()) out.tail.push(ln);
+  }
+  return out;
+}
+async function loadSWEAggregate(){
+  const card=$('#swe-agg-card'); if(!card) return;
+  const r=await api('/api/swe/aggregate');
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('target'), el('span',{},'已评分聚合'),
+    el('span',{cls:'hint'},'reviews 按 instance_id 去重取最后一条 · 跑批中数字会随 rerun 临时文件增长')));
+  if((!r.ok&&!r.lines)||((r.lines||[]).length===0)){
+    c.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon('doc')}),
+      el('div',{},r.error||'还没有已评分结果')));
+    card.append(c); return;
+  }
+  const agg=parseAggLines(r.lines);
+  if(agg.summary){
+    c.append(el('div',{style:'font-size:15px;margin-bottom:12px'},
+      '已评分 '+agg.summary.scored+'/'+agg.summary.total+' · resolved '
+      +agg.summary.resolved+' · acc '+(agg.summary.acc*100).toFixed(2)+'%'));
+  }
+  if(agg.rows.length){
+    const wrap=el('div',{style:'overflow:auto;max-height:360px'});
+    const tb=el('table');
+    tb.innerHTML='<thead><tr><th>repo</th><th>resolved</th><th>total</th><th>acc</th></tr></thead>';
+    const tbody=el('tbody');
+    agg.rows.forEach(row=>{
+      const tr=el('tr');
+      tr.innerHTML='<td class="mono">'+esc(row.repo)+'</td><td>'+row.resolved
+        +'</td><td>'+row.total+'</td><td>'+(row.acc*100).toFixed(2)+'%</td>';
+      tbody.append(tr);
+    });
+    tb.append(tbody); wrap.append(tb); c.append(wrap);
+  }else if(!agg.summary){
+    c.append(el('div',{cls:'muted'},'暂无聚合数据（'+esc(r.error||'聚合器无输出')+'）'));
+  }
+  if(agg.tail.length){
+    const det=el('details',{style:'margin-top:10px'});
+    det.append(el('summary',{cls:'hint',style:'cursor:pointer'},'原始输出 / 未解决实例明细'));
+    det.append(el('pre',{cls:'log',style:'max-height:280px'},
+      agg.tail.slice(0,80).join('\n')+(agg.tail.length>80?('\n... 共 '+agg.tail.length+' 行'):'')));
+    c.append(det);
+  }
+  card.append(c);
+}
+async function loadSWEBatches(){
+  const card=$('#swe-batches-card'); if(!card) return;
+  const r=await api('/api/swe/batches');
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('list'), el('span',{},'批次时间线'),
+    el('span',{cls:'hint'},'batches.log 尾部（分批驱动: 拉镜像 → 评 → prune）')));
+  if(!r.ok){ c.append(el('div',{cls:'muted'},esc(r.error||'日志不存在'))); card.append(c); return; }
+  c.append(el('pre',{cls:'log'},(r.lines||[]).join('\n')));
+  card.append(c);
+}
+async function loadSWERerun(){
+  const card=$('#swe-rerun-card'); if(!card) return;
+  const r=await api('/api/swe/rerun');
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('list'), el('span',{},'补跑队列'),
+    el('span',{cls:'hint'},'rerun_ids.txt · # 注释为分组原因')));
+  if(!r.ok){ c.append(el('div',{cls:'muted'},'清单不存在')); card.append(c); return; }
+  c.append(el('div',{style:'margin-bottom:10px'},
+    el('span',{cls:'pill pending'},(r.count||0)+' 条待补跑'),
+    el('span',{cls:'hint',style:'margin-left:10px'},
+      '启动: 上方「启动评测」选补跑队列模式，或 CLI python3 swe_runner.py start-rerun')));
+  if((r.groups||[]).length){
+    const gv=el('div',{cls:'hint',style:'margin-bottom:10px'});
+    gv.innerHTML=(r.groups||[]).map(g=>esc(g.count+' 条 · '+g.comment)).join('<br>');
+    c.append(gv);
+  }
+  if((r.sample||[]).length){
+    const wrap=el('div',{style:'overflow:auto;max-height:220px'});
+    wrap.append(el('pre',{cls:'log',style:'margin:0'},(r.sample||[]).join('\n')));
+    c.append(wrap);
+    if(r.count>(r.sample||[]).length)
+      c.append(el('div',{cls:'hint'},'... 其余 '+(r.count-r.sample.length)
+        +' 条略（完整清单: python3 swe_runner.py rerun-list）'));
+  }
+  card.append(c);
+}
+
 /* ============================ 导航 ============================ */
 const RENDER={ config:renderConfig, cases:renderCases, projects:renderProjects,
-               functional:renderFunctional, accuracy:renderAccuracy, agentx:renderAgentX };
+               functional:renderFunctional, accuracy:renderAccuracy, agentx:renderAgentX,
+               agent:renderAgent };
 async function go(view){
-  /* 切页签前停掉功能/精度/AgentX 的轮询链，防止旧链残留叠加请求 */
-  ['func','acc','agentx'].forEach(stopPoller);
+  /* 切页签前停掉功能/精度/AgentX/BFCL/SWE 的轮询链，防止旧链残留叠加请求 */
+  ['func','acc','agentx','bfcl','swe'].forEach(stopPoller);
   VIEW=view;
   if(view!=='projects') CURRENT_PROJECT=null;
-  /* 记到 URL hash: 刷新/分享链接后回到当前页签 */
-  if(('#'+view)!==location.hash) history.replaceState(null,'','#'+view);
+  /* 记到 URL hash: 刷新/分享链接后回到当前页签；
+     agent 页签例外——hash 由 goAgentSub 写成 #agent-bfcl/#agent-swe 以定位子面板 */
+  if(view!=='agent' && ('#'+view)!==location.hash) history.replaceState(null,'','#'+view);
   $$('#nav a').forEach(a=>a.classList.toggle('active', a.dataset.view===view));
   try { await RENDER[view](); }
   catch(e){ const m=$('#main'); if(m){ m.innerHTML=''; m.append(el('div',{cls:'card'},
@@ -1485,8 +1966,15 @@ setInterval(async ()=>{
   /* 全部生成结束（无 generating）→ 一次完整刷新收尾 */
   if(!anyGenerating) renderCases();
 },3000);
-/* 刷新后恢复上次页签（hash 优先, 无 hash 落配置项） */
-go(RENDER[location.hash.slice(1)] ? location.hash.slice(1) : 'config');
+/* 刷新后恢复上次页签（hash 优先, 无 hash 落配置项）。
+   agent 页签支持子面板定位: #agent-bfcl / #agent-swe；
+   合并前的旧链接 #bfcl / #swe 兼容重定向到对应子面板 */
+(function(){
+  const h=location.hash.slice(1);
+  if(h==='agent-bfcl'||h==='bfcl'){ AGENT_SUB='bfcl'; go('agent'); }
+  else if(h==='agent-swe'||h==='swe'){ AGENT_SUB='swe'; go('agent'); }
+  else go(RENDER[h] ? h : 'config');
+})();
 </script>
 </body>
 </html>
