@@ -494,15 +494,31 @@ def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
     每档请求数 = 并发 x 5。progress_cb(stage, detail) 用于 Web 页面观测。
     stop_check() 返回 True 时中止预热（Web stop 请求），已启动的档用 killpg 杀掉。
     返回 True=全部档完成; False=有档失败或被中止（不阻断后续摸高, 只告警）。
+
+    warmup_budget_min>0 时预热整体限时: 池 put 异常（如 mooncake TRANSFER_FAIL）或
+    超长输入下, 冷 prefill 逐档预热单场景可拖数小时; 到预算即杀当前档并跳过剩余档,
+    摸高照常进行。两种池跑同一预热协议, 保证对比口径一致。
     """
     sid = scenario_id(sc)
     warm_dir = os.path.join(RESULTS_DIR, sid, "prefix_warmup")
     os.makedirs(warm_dir, exist_ok=True)
+    wb_min = (cfg.get("benchmark") or {}).get("warmup_budget_min") or 0
+    wb_s = wb_min * 60.0 if wb_min else 0.0
+    t0 = time.time()
+
+    def _warmup_over_budget():
+        return wb_s > 0 and time.time() - t0 >= wb_s
+
     all_ok = True
     for conc in PREFIX_WARMUP_CONCURRENCY:
         if stop_check and stop_check():
             print("    [prefix 预热] 收到停止请求, 中止预热")
             return False
+        if _warmup_over_budget():
+            print(f"    [prefix 预热] 已达预热时间预算 {wb_min} 分钟, 跳过剩余档"
+                  f"（并发 {conc} 及以上不预热, 直接进入摸高）")
+            all_ok = False
+            break
         if progress_cb:
             try:
                 progress_cb(f"prefix 预热 {conc} 并发", f"请求数 {conc * 5}")
@@ -524,10 +540,24 @@ def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
                 proc.wait()
                 print("    [prefix 预热] 收到停止请求, 中止预热")
                 return False
+            if _warmup_over_budget():
+                print(f"    [prefix 预热] 已达预热时间预算 {wb_min} 分钟, 终止当前档"
+                      f"（并发 {conc}）并跳过剩余档, 直接进入摸高")
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait()
+                all_ok = False
+                break
             time.sleep(2)
-        if proc.returncode != 0:
-            print(f"    [prefix 预热] 并发 {conc} 失败 exit={proc.returncode}（继续下一档）")
-            all_ok = False
+        else:
+            if proc.returncode != 0:
+                print(f"    [prefix 预热] 并发 {conc} 失败 exit={proc.returncode}（继续下一档）")
+                all_ok = False
+            continue
+        if _warmup_over_budget():
+            break
     return all_ok
 
 

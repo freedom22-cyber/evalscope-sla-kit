@@ -192,9 +192,10 @@ def _result_of(case_id):
     """找用例最新 sla_summary.json 并解析成表。"""
     sc_dir = os.path.join(RESULTS_DIR, case_id)
     summary = None
-    paths = sorted(glob.glob(os.path.join(sc_dir, "*", "*", "sla_summary.json")))
+    paths = glob.glob(os.path.join(sc_dir, "*", "*", "sla_summary.json"))
     if paths:
-        summary = paths[-1]
+        # mtime 取最新：结果目录名时间戳可能来自宿主(CST)或容器(UTC)两个时钟
+        summary = max(paths, key=os.path.getmtime)
     rows = []
     if summary:
         try:
