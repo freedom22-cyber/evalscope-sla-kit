@@ -22,6 +22,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -33,6 +34,7 @@ import uuid
 KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, KIT_ROOT)
 
+import agentx_runner  # noqa: E402
 import runner  # noqa: E402
 
 try:
@@ -1297,30 +1299,64 @@ def api_acc_history():
     st = load_state()
     return {"ok": True, "history": list(reversed(st.get("accuracy_history") or []))}
 
-@app.get("/api/agentx/config")
-def api_agentx_config():
-    """读 AgentX 变体配置（config.yaml agentx.datasets）。"""
-    cfg, st = effective_config()
-    ax = cfg.get("agentx") or {}
+def _agentx_variants(cfg: dict) -> list:
+    """从生效配置解析 AgentX 变体（复用 runner 的正则解析, 支持 local:<目录> 含逗号）。"""
     variants = []
-    for line in ax.get("datasets") or []:
+    for line in (cfg.get("agentx") or {}).get("datasets") or []:
         line = str(line).strip()
         if not line or line.startswith("#"):
             continue
         try:
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 3:
-                continue
-            variants.append({
-                "tag": parts[0], "dataset": parts[1],
-                "concurrency": int(parts[2]),
-                "tokenizer": parts[3] if len(parts) > 3 else "",
-                "raw": line,
-            })
-        except (ValueError, IndexError):
-            continue
+            variants.append(agentx_runner.parse_variant_line(line))
+        except ValueError:
+            continue   # 格式坏的行跳过（与 runner --list 一致, 不让单行拖垮整页）
+    return variants
+
+
+@app.get("/api/agentx/config")
+def api_agentx_config():
+    """读 AgentX 变体配置（config.yaml agentx.datasets）。"""
+    cfg, st = effective_config()
+    variants = [{
+        "tag": v["tag"], "dataset": v["dataset"],
+        "concurrency": v["concurrency"], "tokenizer": v["tokenizer"],
+        "raw": v["raw"],
+    } for v in _agentx_variants(cfg)]
     return {"ok": True, "variants": variants,
             "from_override": bool(st.get("agentx_override"))}
+
+
+@app.get("/api/agentx/commands")
+def api_agentx_commands(only: str = "", concurrency: int = 0):
+    """构建每个变体实际执行的 agentx profile 命令（页面预览, 不执行）。
+
+    直接复用 agentx_runner.build_cmd —— 与真实运行逐参数一致（url/tokenizer/
+    local: 语料校验/Host 头/api_key/max_context_length 全走同一代码路径）。
+    local: 语料目录缺失等错误按变体返回 error, 不影响其他变体。
+    """
+    cfg, _ = effective_config()
+    variants = _agentx_variants(cfg)
+    if only:
+        wanted = {w.strip() for w in only.split(",") if w.strip()}
+        variants = [v for v in variants if v["tag"] in wanted]
+    commands = []
+    for v in variants:
+        item = {"tag": v["tag"]}
+        try:
+            cmd, work_dir = agentx_runner.build_cmd(cfg, v, concurrency or None)
+            item["cmd"] = " ".join(shlex.quote(c) for c in cmd)
+            item["work_dir"] = work_dir
+        except Exception as e:   # local 语料缺失/缺 stats 等, 明确回显给页面
+            item["error"] = str(e)
+        commands.append(item)
+    # 页面「运行」按钮实际启动的 runner 命令（--config 是页面服务配置的临时导出）
+    wrapper = ["python3", os.path.join(KIT_ROOT, "agentx_runner.py")]
+    if only:
+        wrapper += ["--only", only]
+    if concurrency:
+        wrapper += ["--concurrency", str(int(concurrency))]
+    return {"ok": True, "commands": commands,
+            "wrapper": " ".join(shlex.quote(c) for c in wrapper)}
 
 @app.post("/api/agentx/run")
 def api_agentx_run(payload: dict = Body(default={})):
@@ -1345,6 +1381,8 @@ def api_agentx_run(payload: dict = Body(default={})):
     conc = payload.get("concurrency")
     if conc:
         cmd += ["--concurrency", str(int(conc))]
+    # 记录实际启动命令（运行状态卡回显; --config 临时文件名对用户无意义, 换成页面配置说明）
+    _AGENTX_TASK.update(cmd=" ".join(cmd).replace(tmp_cfg.name, "config.yaml(页面服务配置导出)"))
     def _cleanup():
         try: os.unlink(tmp_cfg.name)
         except OSError: pass
