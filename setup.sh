@@ -2,6 +2,7 @@
 # ============================================================================
 # 一键安装环境（Linux 目标主机 / 容器内执行）
 # 安装: evalscope[perf] + 数据集生成依赖（torch/transformers 由镜像自带则跳过）
+#       + BFCL v4 函数调用评测线的独立 venv（可选; 装失败仅告警, 不影响其余线）
 # 用法:
 #   bash setup.sh              # 常规安装（清华 pip 源）
 #   bash setup.sh --cn-proxy   # 内网需代理时先设置 http_proxy/https_proxy
@@ -9,6 +10,8 @@
 set -e
 PIP_INDEX="${PIP_INDEX:-https://pypi.org/simple}"
 PY="${PYTHON:-python3}"
+# BFCL 独立 venv 路径（与 config.yaml bfcl.venv_python / bfcl_runner.py 取值同源, 可覆盖）
+BFCL_VENV="${BFCL_VENV:-/mnt/sfs_turbo/c00803992/bfcl-venv}"
 
 echo "== [1/4] 检查 Python =="
 "$PY" --version || { echo "未找到 python3"; exit 1; }
@@ -72,6 +75,37 @@ echo "== [3/4] 修复已知依赖坑 =="
 "$PY" -c "import yaml" 2>/dev/null \
   || "$PY" -m pip install pyyaml -i "$PIP_INDEX"
 
+echo "== [3.5/4] BFCL 函数调用评测线（独立 venv, 可选） =="
+# BFCL 依赖装在独立 venv（不与上面 perf 线共用环境, 也不碰 /tmp/bench-venv）。
+# venv 的 bin/python 链到容器内解释器, 必须在 ais-bench 容器里可用, 故创建/装包
+# 统一经 docker exec 派发; setup 跑在容器内时直跑（与 bfcl_runner.resolve_dispatch 同口径）。
+if [ -f /.dockerenv ]; then
+  BFCL_RUN=()                    # 已在容器内, 直接执行
+else
+  BFCL_RUN=(docker exec ais-bench)
+fi
+# 幂等: venv 已存在且关键包都能导入 → 跳过安装
+#（docker exec 的 OCI 报错走 stdout, 探测命令需 >/dev/null 2>&1 才能完全静音）
+if "${BFCL_RUN[@]}" "$BFCL_VENV/bin/python" -c "import evalscope, pyarrow, soundfile" >/dev/null 2>&1; then
+  echo "  bfcl-venv 已就绪（evalscope / pyarrow / soundfile 导入 OK），跳过安装"
+else
+  # 缺 venv 或缺依赖 → 按 README「venv 重建」配方安装:
+  #   - venv 建在 NFS 上, 容器重建不丢; 基础解释器用容器内 python3.12（不是宿主 $PY,
+  #     对已存在的 venv 重跑 -m venv 只更新脚本不动 site-packages, 安全）
+  #   - pyarrow==21.0.0 / soundfile 是上游未声明、必须手补的依赖（坑位见 README）
+  #   - pip 源走 $PIP_INDEX（README 验证配方用清华源; 内网 pip 不通时
+  #     PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash setup.sh）
+  # 整条链在 if 条件里: 任一步失败（容器没起 / pip 不通）只落 else 告警, 不中断 setup
+  if "${BFCL_RUN[@]}" /usr/local/python3.12.13/bin/python3.12 -m venv "$BFCL_VENV" \
+     && "${BFCL_RUN[@]}" "$BFCL_VENV/bin/pip" install -i "$PIP_INDEX" \
+          "evalscope==1.14.1" "bfcl-eval==2025.10.27.1" "pyarrow==21.0.0" soundfile \
+     && "${BFCL_RUN[@]}" "$BFCL_VENV/bin/python" -c "import evalscope, pyarrow, soundfile"; then
+    echo "  bfcl-venv 安装完成（evalscope / pyarrow / soundfile 导入 OK）"
+  else
+    echo "警告: bfcl-venv 安装/校验失败 —— BFCL 函数调用线不可用（其余测试线不受影响）"
+  fi
+fi
+
 echo "== [4/4] 验证 =="
 "$PY" -c "from evalscope.perf.main import run_perf_benchmark; print('evalscope.perf 导入 OK')"
 "$PY" -c "import yaml; print('pyyaml OK')"
@@ -80,9 +114,14 @@ evalscope --version 2>/dev/null || "$PY" -c "import evalscope; print('evalscope'
 "$PY" -c "import torch, transformers" 2>/dev/null \
   && echo "torch/transformers OK（可生成 gsm8k 数据集）" \
   || echo "警告: 缺 torch/transformers —— random 场景可跑，gsm8k 数据集生成不可用"
+# BFCL venv 复验（可选线; [3.5/4] 已处理, 此处只报可用性）
+"${BFCL_RUN[@]}" "$BFCL_VENV/bin/python" -c "import evalscope, pyarrow, soundfile" >/dev/null 2>&1 \
+  && echo "bfcl-venv OK（bash run.sh --bfcl 函数调用评测可用）" \
+  || echo "警告: bfcl-venv 不可用 —— BFCL 函数调用线装失败，其余测试线不受影响"
 
 echo
 echo "安装完成。下一步:"
 echo "  1. 编辑 config.yaml（url / model / tokenizer_path / 场景开关）"
 echo "  2. bash run.sh --dry-run   预检命令"
 echo "  3. bash run.sh             开始摸高（nohup 后台）"
+echo "  4. bash run.sh --bfcl      函数调用精度评测（可选线, bfcl-venv 就绪时可用）"

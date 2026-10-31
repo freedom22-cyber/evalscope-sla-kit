@@ -16,6 +16,8 @@
 #   bash run.sh --agentx -f         # 前台跑 AgentX
 #   bash run.sh --functional        # 后台跑功能检查（scripts/run_api_e2e.py, 日志 func_*.log）
 #   bash run.sh --functional -f     # 前台跑功能检查
+#   bash run.sh --bfcl              # 后台跑 BFCL 函数调用评测（bfcl_runner.py, 日志 bfcl_*.log）
+#   bash run.sh --bfcl -f           # 前台跑 BFCL
 # ============================================================================
 set -u
 cd "$(dirname "$0")"
@@ -30,6 +32,7 @@ case "${1:-}" in
   --accuracy)   shift; RUNNER="accuracy_runner.py"; PREFIX="acc" ;;
   --agentx)     shift; RUNNER="agentx_runner.py"; PREFIX="agentx" ;;
   --functional) shift; RUNNER="scripts/run_api_e2e.py"; PREFIX="func" ;;
+  --bfcl)       shift; RUNNER="bfcl_runner.py"; PREFIX="bfcl" ;;
   *)            ;;
 esac
 
