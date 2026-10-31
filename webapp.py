@@ -824,6 +824,27 @@ def _kill_tree(proc):
     return killed
 
 
+def _parse_func_summary(log_path):
+    """功能测试收尾摘要: 末行 [api-e2e] pass=N, warn=N, fail=N, skip=N。
+
+    exit 1 只是"存在 FAIL 用例"的约定信号；报告已写出 = 运行本身完整结束。
+    返回 {pass,warn,fail,skip}，未跑完/崩溃返回 None。
+    """
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    if not any("[api-e2e] wrote report:" in ln for ln in lines[-5:]):
+        return None
+    for ln in reversed(lines):
+        m = re.match(r"\[api-e2e\] pass=(\d+), warn=(\d+), fail=(\d+), skip=(\d+)", ln)
+        if m:
+            return {"pass": int(m.group(1)), "warn": int(m.group(2)),
+                    "fail": int(m.group(3)), "skip": int(m.group(4))}
+    return None
+
+
 def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
     """通用后台执行：功能/精度/AgentX 测试共用。start_new_session 起独立进程组供 stop 整组杀。
 
@@ -857,7 +878,15 @@ def _run_generic(key, task_dict, cmd, log_prefix, report_parser=None):
             elif r == 0:
                 task_dict.update(status="done", finished=_now())
             else:
-                task_dict.update(status="error", finished=_now(), error=f"exit code {r}")
+                # 功能测试: exit 1 = 存在 FAIL 用例（约定信号）而非运行崩溃——
+                # 报告已完整写出时标 done_partial（前端显示"完成（含失败用例）"+统计），
+                # 只有真正没跑完的才保留 error。
+                summary = _parse_func_summary(log_path) if log_prefix == "func" else None
+                if summary:
+                    task_dict.update(status="done_partial", finished=_now(),
+                                     error=f"exit code {r}", summary=summary)
+                else:
+                    task_dict.update(status="error", finished=_now(), error=f"exit code {r}")
             # 精度测试: 运行结束把结果记入历史（web_state accuracy_history）
             if log_prefix == "acc" and task_dict.get("status") in ("done", "error"):
                 _record_accuracy_history(task_dict)
@@ -926,10 +955,13 @@ def api_func_stop():
 def api_func_report():
     """读最新功能测试 markdown 报告。"""
     base = os.path.join(RESULTS_DIR, "functional")
-    reports = sorted(glob.glob(os.path.join(base, "**", "report.md"), recursive=True))
+    reports = glob.glob(os.path.join(base, "**", "report.md"), recursive=True)
     if not reports:
         return {"ok": False, "report": None}
-    path = reports[-1]
+    # 按 mtime 取最新：报告目录名的时间戳混用宿主 CST（CLI 跑）与容器 UTC（webui 跑）
+    # 两个时钟，按目录名排序会把旧的冒烟报告当成"最新"（2026-10-31 实锤：
+    # 11:58 的 3 条冒烟盖住了 15:45 的 50 条全量）
+    path = max(reports, key=os.path.getmtime)
     with open(path, encoding="utf-8") as f:
         text = f.read()
     return {"ok": True, "report": text, "path": path}

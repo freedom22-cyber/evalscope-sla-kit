@@ -118,7 +118,7 @@
   .pill.pending{background:rgba(148,163,184,.14);color:#cbd5e1}
   .pill.error{background:rgba(239,68,68,.16);color:#fca5a5;border-color:rgba(239,68,68,.3)}
   .pill.not_started{background:rgba(148,163,184,.1);color:var(--fg-mute)}
-  .pill.stopped,.pill.interrupted{background:rgba(245,158,11,.16);color:#fcd34d;border-color:rgba(245,158,11,.3)}
+  .pill.stopped,.pill.interrupted,.pill.done_partial{background:rgba(245,158,11,.16);color:#fcd34d;border-color:rgba(245,158,11,.3)}
 
   .toast{position:fixed;right:26px;bottom:26px;background:rgba(21,29,46,.96);color:#fff;padding:13px 19px;
          border-radius:12px;font-size:13px;opacity:0;transform:translateY(10px);border:1px solid var(--glass-line);
@@ -297,7 +297,7 @@ async function api(path, opts={}){
   return data;
 }
 const STATUS_CN = { done:'已完成', running:'进行中', pending:'排队中', error:'失败',
-  not_started:'未开始', stopped:'已停止', interrupted:'已中断' };
+  done_partial:'完成（含失败用例）', not_started:'未开始', stopped:'已停止', interrupted:'已中断' };
 function pill(s){ return '<span class="pill '+(s||'not_started')+'">'+(STATUS_CN[s]||s||'未开始')+'</span>'; }
 const kfmt = n => (n==null) ? '-' : ((n && n % 1024 === 0) ? (n/1024)+'k' : n);
 const hitfmt = h => (h==null) ? '-' : (h===0 ? '0%' : (h*100).toFixed(0)+'%');
@@ -1033,7 +1033,15 @@ function statusCard(baseId, st, running, labelMap){
   }
   kv.append(el('div',{cls:'k'},'开始'), startV);
   kv.append(el('div',{cls:'k'},'结束'), el('div',{cls:'v'},st.finished||'-'));
-  if(st.error) kv.append(el('div',{cls:'k'},'错误'), el('div',{cls:'v',style:'color:var(--destructive)'},st.error));
+  /* 有统计摘要 = 运行完整结束（exit 1 只是存在 FAIL 用例的约定信号），显示统计而非赤裸退出码 */
+  if(st.summary){
+    kv.append(el('div',{cls:'k'},'结果'), el('div',{cls:'v',html:
+      st.summary.pass+' 通过 · '+st.summary.warn+' 警告 · '
+      +'<span style="color:var(--destructive)">'+st.summary.fail+' 失败</span> · '
+      +st.summary.skip+' 跳过'}));
+  } else if(st.error){
+    kv.append(el('div',{cls:'k'},'错误'), el('div',{cls:'v',style:'color:var(--destructive)'},st.error));
+  }
   const ld=el('div',{cls:'v'});
   if(st.log_path){ ld.innerHTML='<code>'+esc(st.log_path)+'</code> '; const b=el('button',{cls:'small'},'查看日志'); b.onclick=()=>showLog(st.log_path); ld.append(b); }
   else ld.innerHTML='<span class="muted">-</span>';

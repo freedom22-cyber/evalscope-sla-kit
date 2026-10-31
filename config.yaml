@@ -195,27 +195,38 @@ agentx:
 # ============================================================================
 # 功能测试（scripts/run_api_e2e.py, Simaas 风格 API E2E 框架）
 # ----------------------------------------------------------------------------
+# 用例编号: 单一 C 编号共 50 条（用户矩阵 C01-C41 除 C17/C20 流式空洞外全覆盖,
+#   C46 流式已删, C42-C50 的检查并入对应编号, 专有检查续编 C51-C61）
+#   总表见 README.md「功能测试」一节
 # 用法: bash run.sh --functional            # 后台跑全部用例（日志 logs/func_*.log）
 #       bash run.sh --functional -f         # 前台
-#       python3 scripts/run_api_e2e.py --list / --dry-run / --only F-03
+#       python3 scripts/run_api_e2e.py --list / --dry-run / --only C30
 #       python3 scripts/run_api_e2e.py --base-url https://116.204.8.3/infer7 \
 #           --model 'glm-5' --header 'Host: sz.glm5.com' --skip-bench \
 #           --capability-repeat 10 --insecure
-# 判定口径: PASS / FAIL（计入退出码）/ WARN（已知缺陷, 不计 FAIL）/ SKIP
-# 已知缺陷: reasoning_effort="medium" 在部分服务上必 400 -> 记 WARN（F-03_medium）
+# 判定口径: PASS / FAIL（计入退出码）/ WARN（已知缺陷或可选能力未实现, 不计 FAIL）/ SKIP
+# 已知缺陷: reasoning_effort="medium" 在部分服务上必 400 -> 记 WARN（C60）
 # ============================================================================
 functional:
-  # 单请求超时（秒）。思考型模型单次回答可能几十秒, 且 MaaS 网关有 60s 首字节
-  # 超时——功能用例的 chat 走流式, 但整体仍给足超时
+  # 单请求超时（秒）。思考型模型单次回答可能几十秒; 功能线已全非流式
+  # （流式能力由性能线覆盖）, 整体仍给足超时兜底
   timeout_s: 300
   # 输出预算（max_tokens）。GLM-5.3 强制思考, 预算太小会被思考链吃光导致正文为空
   max_tokens: 2048
-  efforts: [low, high, xhigh, max] # F-03 effort 矩阵（medium 由 F-03_medium 专项检查）
-  skip: []                         # 跳过的用例 tag, 如 [F-05_claude]
+  efforts: [low, high, xhigh, max] # C56 起的 effort 矩阵档位（medium 由紧随其后的编号专项检查）
+  # 跳过的用例（C 编号 / tag / 用例名子串）, 如 [C61, C30]
+  skip: []
   # 接口协议族: openai / messages / gemini / embedding（可多选; 当前服务只暴露 openai）
   interface_types: [openai]
   # capability 类用例（/category 以 capability 结尾）重复轮数, 用于抖动检测
   capability_repeat: 1
+  # /v1/responses 协议族用例整族开关（C04/C06/C08/C09/C11/C14/C16/C18/C19/C24/C28/C29/C32,
+  # 共 13 条, C17 流式已移除）。网关不支持 responses 端点时可置 true 整体跳过; 命令行 --skip-responses-api 同效
+  skip_responses_api: false
+  # C33 思考深度探针（3 档 effort x3 次共 9 请求, 断言 reasoning 量 low<high<max）。
+  # 默认关闭; 置 true 或命令行 --thinking-depth-check 开启
+  thinking_depth_check: false
+  # C38 超长输入按 service.max_context_length x1.1 构造（未设置该键则 C38 自动 SKIP）
   # 长上下文召回（8k 填充 + needle）默认关闭: 推理模型上耗时高, 需要时置 false
   skip_long_context_api: true
   long_context_api_tokens: 8192    # 长上下文填充 token 数

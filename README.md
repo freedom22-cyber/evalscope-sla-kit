@@ -22,7 +22,7 @@ evalscope_sla_kit/
 ├── runner.py           # 摸高: 场景解析 + 数据集生成 + evalscope 命令构建执行
 ├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + pass@k/mean 分数解析汇总
 ├── agentx_runner.py    # AgentX: 智能体回放（cc-traces 公共语料 / local:<目录> 本地裁剪语料）
-├── scripts/run_api_e2e.py  # 功能测试: API E2E 框架（22 条用例，PASS/WARN/FAIL/SKIP）
+├── scripts/run_api_e2e.py  # 功能测试: API E2E 框架（50 条用例 C01-C61 单一编号, 全非流式, PASS/WARN/FAIL/SKIP）
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI，端口 8300）
 ├── web/index.html      # Web 控制台前端（五页签单页应用，深色玻璃拟态）
@@ -221,27 +221,96 @@ sunzhi 仓 F-03 / docs/lessons_api208.md §4），配置时避开。
 
 ## 功能测试（scripts/run_api_e2e.py）
 
-Simaas 风格 API E2E 框架：22 条用例，覆盖 OpenAI 兼容性/流式/结构化输出/多轮/工具调用等，
-判定 **PASS / WARN / FAIL / SKIP**。纯标准库 urllib 发请求。
+Simaas 风格 API E2E 框架：**50 条用例，单一 C 编号**（用户矩阵 C01-C41 除流式空洞
+外全覆盖；C42-C50 的检查并入对应编号；kit 专有检查续编 C51-C61），
+覆盖兼容性/参数探测/能力/SDK/结构化输出/思考泄漏/上下文/用量/负向等，
+**全部非流式**，判定 **PASS / WARN / FAIL / SKIP**。纯标准库 urllib 发请求
+（C16/C18/C19 用 openai SDK，lazy import，未安装时 SKIP）。
 
 ```bash
 bash run.sh --functional                        # 后台跑全部用例
 bash run.sh --functional -f                     # 前台跑
-python3 scripts/run_api_e2e.py --list           # 列出全部用例
-python3 scripts/run_api_e2e.py --only F-03      # 只跑指定用例
+python3 scripts/run_api_e2e.py --list           # 列出全部用例（五列, 按编号排序）
+python3 scripts/run_api_e2e.py --only C30       # 只跑指定用例（C 编号 / gate tag / 名字子串）
+python3 scripts/run_api_e2e.py --dry-run        # 打印计划不发请求
 ```
 
-### 用例清单（摘要）
+### 用户矩阵用例（C01-C41）
 
-| category | 用例 | 检查点 |
+> **C17/C20/C46 流式用例已按需求移除**（编号保留空洞不重排），流式能力由性能线覆盖。
+> C42-C50 是同一批检查的原始描述，已并入对应编号：
+> C42→C01、C43→C02、C44→C03、C45→C04、C47→C22、C48→C35、C49→C39、C50→C37。
+
+| 编号 | category | 检查点（判定要点） |
 |---|---|---|
-| openai/compatibility | models list / chat / completions / responses | 端点可用、响应非空 |
-| openai/streaming | chat streaming | SSE 含 `data:` 与 `[DONE]` |
-| openai/structured-output | json object | 输出可解析为 JSON |
-| openai/context | multi-turn recall / long-context recall | 多轮与长上下文召回 |
-| openai/finops | chat usage | usage 字段齐全 |
-| openai/robustness | max_tokens / stop / determinism / unknown model | 鲁棒性 |
-| openai/capability | thinking on/off / effort 矩阵 / tool call | 能力探测 |
+| C01 | openai/compatibility | GET /v1/models 列模型（吸收 C42「无 body」） |
+| C02 | openai/compatibility | chat 冒烟，正文非空（吸收 C43） |
+| C03 | openai/compatibility | completions 冒烟（吸收 C44） |
+| C04 | openai/compatibility | responses 冒烟；4xx→WARN（吸收 C45） |
+| C05 | openai/param-probe | 逐参数隔离探测 temperature/top_p/top_k/max_tokens/max_completion_tokens/frequency_penalty+组合；2xx=PASS，4xx=WARN（不支持），5xx=FAIL |
+| C06 | openai/param-probe | responses 同款参数探测（max_output_tokens 替代 max_tokens） |
+| C07 | openai/capability | tools 触发 tool_calls |
+| C08 | openai/capability | Responses API function tool；断言 function_call item + arguments 合法 JSON |
+| C09 | openai/capability | Responses API web_search tool；**仅 gpt 系模型**，否则 SKIP |
+| C10 | openai/capability | chat_template_kwargs.thinking on/off；方向不符→WARN |
+| C11 | openai/capability | responses reasoning.effort=low，正文非空 |
+| C12 | openai/capability | completions logprobs+echo；缺 logprobs 字段→WARN |
+| C13 | openai/capability | chat KV cache：同前缀两连发，第二发 usage.prompt_tokens_details.cached_tokens>0；缺失/0→WARN |
+| C14 | openai/capability | responses KV cache（input_tokens_details.cached_tokens，口径同 C13） |
+| C15 | openai/capability | 视频理解（自包含 mp4 探测载荷）；端点拒绝→WARN |
+| C16 | openai/sdk | openai SDK responses.create 严格解析（4xx→WARN=端点未实现） |
+| C18 | openai/sdk | openai SDK responses function tool（tool_choice 强制） |
+| C19 | openai/sdk | openai SDK responses web_search；**仅 gpt 系模型**，否则 SKIP |
+| C21 | openai/structured-output | 仅靠 prompt 的 best-effort JSON 输出 |
+| C22 | openai/structured-output | response_format=json_object（吸收 C47） |
+| C23 | openai/structured-output | response_format=json_schema strict；required 字段校验 |
+| C24 | openai/structured-output | responses text.format json_schema |
+| C25 | openai/structured-output | GLM 风格：system 给 schema + json_object |
+| C26 | openai/structured-output | json_object × 思考关闭/effort 变体，仍须产出合法 JSON |
+| C27 | openai/thinking-leak | chat 带 tools 不带思考参数：正文无 think 标签且非空（tool_call 轮除外），思考走 reasoning_content；截断→WARN |
+| C28 | openai/thinking-leak | responses 带 tools 不带 reasoning：正文无 think 标签，思考为独立 reasoning item |
+| C29 | openai/thinking-leak | responses 不带 tools 不带 reasoning，断言同 C28 |
+| C30 | openai/thinking-leak | 缺省+顶层 reasoning_effort 7 档 × {无/有 tool}=16 请求（全非流式）；正文/泄漏/方向/结构四类断言，4xx→WARN |
+| C31 | openai/thinking-leak | enable_thinking / thinking.type / ctk.thinking 三种开关 × on/off（带 tool）=6 请求 |
+| C32 | openai/thinking-leak | responses reasoning.effort 4 档 × {无/有 tool}=10 请求（尊重 --skip-responses-api） |
+| C33 | openai/thinking-depth | 思考深度探针（**opt-in**）：ctk {thinking,reasoning_effort} low/high/max，每档 3 次取中位，断言单调递增，不达标→WARN |
+| C34 | openai/context | system prompt 回显（marker 断言） |
+| C35 | openai/context | multi-turn 召回 secret token（吸收 C48） |
+| C36 | openai/context | 末尾追加运行时 system 消息，正文非空 |
+| C37 | openai/context | 长上下文 needle 召回（吸收 C50；受 skip_long_context_api 门控，默认关） |
+| C38 | openai/context | 超长输入=service.max_context_length×1.1 填充；4xx=正确拒绝 PASS，2xx→WARN（原表 Endpoint 笔误写 completions，按分组语义以 chat completions 实现） |
+| C39 | openai/finops | chat usage 一致性（吸收 C49；非流式请求断言 usage 字段齐且 prompt+completion=total） |
+| C40 | openai/finops | completions usage 一致性 |
+| C41 | openai/robustness | 负向矩阵：invalid model / messages 类型 / 数值参数 / tool schema 四变体，全部期望 4xx；2xx 静默接受→FAIL |
+
+### 专有检查（C51-C61）
+
+F 矩阵未覆盖、kit 自带的专有检查，续编在用户矩阵之后；effort 档位展开自
+`functional.efforts`（默认 `[low, high, xhigh, max]` 时编号如下，档位数变化时
+medium/会话顺延）：
+
+| 编号 | category | 检查点（判定要点） |
+|---|---|---|
+| C51 | openai/robustness | completions max_tokens=8 截断：usage.completion_tokens<=8 |
+| C52 | openai/robustness | completions stop 参数：命中 stop 词后截断 |
+| C53 | openai/robustness | completions 确定性：temperature=0 连发两次文本一致 |
+| C54 | openai/capability | thinking 默认开：响应含 reasoning 内容 |
+| C55 | openai/capability | reasoning_effort=none：reasoning 内容为空 |
+| C56 | openai/capability | reasoning_effort=low：2xx 且含 reasoning 内容 |
+| C57 | openai/capability | reasoning_effort=high（档位展开自 functional.efforts） |
+| C58 | openai/capability | reasoning_effort=xhigh |
+| C59 | openai/capability | reasoning_effort=max |
+| C60 | openai/capability | reasoning_effort=medium 已知缺陷：400→WARN（缺陷仍在），2xx→WARN（静默接受），服务异常→FAIL |
+| C61 | openai/session | claude code 会话（恒 SKIP，真会话跑 `tools/f05_claude_code.sh`） |
+
+### 新增开关
+
+| 开关（CLI / config） | 默认 | 作用 |
+|---|---|---|
+| `--skip-responses-api` / `functional.skip_responses_api` | false | 跳过全部 /v1/responses 用例（C04/C06/C08/C09/C11/C14/C16/C18/C19/C24/C28/C29/C32 共 13 条） |
+| `--thinking-depth-check` / `functional.thinking_depth_check` | false | 开启 C33 思考深度探针（3 档 ×3 次=9 请求） |
+| `--long-context-api` / `functional.skip_long_context_api: false` | true（跳过） | 开启 C37/C38；C38 规模由 `service.max_context_length` 决定（未设置则 SKIP） |
+| `--only C05,C41` / `functional.skip: [C30]` | — | C 编号 / gate tag / 用例名子串均可作为过滤/跳过键 |
 
 ### 判定口径
 
@@ -249,8 +318,11 @@ python3 scripts/run_api_e2e.py --only F-03      # 只跑指定用例
 |---|---|---|
 | PASS | 正常 | 否 |
 | FAIL | 失败 | **是** |
-| WARN | 已知缺陷 / 可接受异常 | 否 |
-| SKIP | 主动跳过 | 否 |
+| WARN | 已知缺陷 / 可选能力未实现（如端点 404、参数不支持、KV cache 未开、SDK 4xx） | 否 |
+| SKIP | 主动跳过（config skip / 门控 / 非 gpt 模型 / SDK 未安装） | 否 |
+
+矩阵类用例（C05/C06/C10/C26/C30-C32/C41）聚合口径：任一变体 FAIL→FAIL，
+有 WARN 无 FAIL→WARN，全 PASS→PASS；变体明细写在报告 detail 列。
 
 ## AgentX 智能体回放（agentx_runner.py）
 
@@ -436,7 +508,7 @@ bash run.sh --gen-datasets            # 批量预生成所有 gsm8k 数据集
 | `tools/jsonl_to_prompts.py` | jsonl → 纯文本 prompts.txt |
 | `tools/curate_weka_traces.py` | cc-traces-weka 本地裁剪语料生成（目标画像: 会话数 / 主轮数 / 平均输入 / 缓存命中；输出每会话一个 JSON + `<目录>_stats.json`，AgentX `local:<目录>` 变体回放） |
 | `tools/data_picker.py` | 数据集挑选 |
-| `tools/f05_claude_code.sh` | F-05 claude code CLI 会话（问答 + 工具调用）自动化；`functional_runner.py` 里的 F-05 只做存在性检查（恒 SKIP），真会话跑这个脚本 |
+| `tools/f05_claude_code.sh` | claude code CLI 会话（问答 + 工具调用）自动化；功能线 C61 只做存在性检查（恒 SKIP），真会话跑这个脚本 |
 | `tools/passk_evalscope.py` | evalscope CLI wrapper：把 `--dataset-args` 里 JSON dict 形式的 `primary_metric` 转成 `MetricSelector` 对象（pass@k 报告期必需，否则 no-unique-primary-metric 必崩；k>1 时 runner 自动切到它） |
 | `tools/wait_service_passk.sh` | 守护：等 ModelArts 服务恢复健康后自动启动 pass@k 评测（健康判定走 `/v1/models` + 极小流式对话，**curl 一律 `--noproxy '*'`**）；work-dir 已有 predictions 时自动带 `--resume` 断点续跑 |
 | `tools/queue_passk.sh` | 守护：等前序精度评测退出后自动启动 pass@k 评测（等"没有精度进程在跑"，不是等写死的 PID） |
@@ -469,8 +541,9 @@ setsid nohup bash tools/wait_service_passk.sh > logs/acc_passk_queue.log 2>&1 &
 9. **thinking 模型**必须 `chat_template_kwargs.thinking=false`（见上）。
 10. **`ignore_eos: true`** 让输出固定到 max_tokens，TPOT/吞吐才可比（默认已开）。
 11. **MaaS 网关有 60s 首字节超时**：非流式请求的首字节 = 整个响应，思考型模型的
-    长回答必然踩雷（网关返 504，看起来像服务坏了）。功能用例的 chat 一律走流式，
-    精度评测的 generation-config 也必须带 `stream: true`。
+    长回答必然踩雷（网关返 504，看起来像服务坏了）。功能线已按需求**全非流式**
+    （`functional.timeout_s: 300` 整体兜底，流式能力由性能线覆盖）；精度评测的
+    generation-config 仍必须带 `stream: true`。
 12. **思考型模型（GLM-5.3 强制思考）的输出预算**：预算太小会被思考链吃光、正文
     为空（`content: null` + `finish_reason: length`）。功能用例给
     `functional.max_tokens: 2048`；旧代码用子串匹配 `"content"` 判过（值为
