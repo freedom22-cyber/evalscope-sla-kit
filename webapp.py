@@ -36,6 +36,7 @@ sys.path.insert(0, KIT_ROOT)
 
 import agentx_runner  # noqa: E402
 import runner  # noqa: E402
+import sla_paths  # noqa: E402  # "最新一轮结果"选择（mtime 口径）
 
 try:
     from fastapi import FastAPI, Body
@@ -191,11 +192,8 @@ def _task_key(project_id, case_id):
 def _result_of(case_id):
     """找用例最新 sla_summary.json 并解析成表。"""
     sc_dir = os.path.join(RESULTS_DIR, case_id)
-    summary = None
-    paths = glob.glob(os.path.join(sc_dir, "*", "*", "sla_summary.json"))
-    if paths:
-        # mtime 取最新：结果目录名时间戳可能来自宿主(CST)或容器(UTC)两个时钟
-        summary = max(paths, key=os.path.getmtime)
+    # mtime 选最新（目录名时间戳混用宿主 CST / 容器 UTC 两个时钟）——口径见 sla_paths
+    summary = sla_paths.latest_summary_path(sc_dir)
     rows = []
     if summary:
         try:

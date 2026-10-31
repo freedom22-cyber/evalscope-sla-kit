@@ -13,7 +13,11 @@ import json
 import os
 import sys
 
-RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
+RESULTS = os.path.join(KIT_ROOT, "results")
+sys.path.insert(0, KIT_ROOT)
+
+from sla_paths import latest_summary_path  # noqa: E402  # "最新一轮"选择（mtime 口径）
 
 K_TTFT = "Avg TTFT (ms)"
 K_TPOT = "Avg TPOT (ms)"
@@ -25,12 +29,14 @@ K_TOTAL_TPS = "Total Throughput (tok/s)"
 
 
 def fmt(v, nd=1):
+    """None / evalscope 失败哨兵（负值, 如全挂轮的 -1000）显示 '-' 而非负数指标。"""
     if v is None:
         return "-"
     try:
-        return f"{float(v):.{nd}f}"
+        v = float(v)
     except (TypeError, ValueError):
         return "-"
+    return "-" if v < 0 else f"{v:.{nd}f}"
 
 
 def load_pool(pool_dir):
@@ -38,14 +44,16 @@ def load_pool(pool_dir):
     out = {}
     for sid_dir in sorted(glob.glob(os.path.join(pool_dir, "gsm8k_*"))):
         sid = os.path.basename(sid_dir)
-        paths = sorted(glob.glob(os.path.join(sid_dir, "*", "*", "sla_summary.json")))
-        if not paths:
+        # mtime 选最新: 结果目录名时间戳混用宿主 CST / 容器 UTC 两个时钟,
+        # 按目录名字典序会把旧一轮选中（口径见 sla_paths 模块说明）
+        path = latest_summary_path(sid_dir)
+        if not path:
             out[sid] = None
             continue
         try:
-            data = json.load(open(paths[-1], encoding="utf-8"))
+            data = json.load(open(path, encoding="utf-8"))
         except Exception as e:  # noqa: BLE001
-            print(f"  [warn] {paths[-1]} 解析失败: {e}")
+            print(f"  [warn] {path} 解析失败: {e}")
             out[sid] = None
             continue
         rows = {}
@@ -62,18 +70,23 @@ def load_pool(pool_dir):
 
 
 def verdict(m, ttft_sla, tpot_sla):
-    """与 report.py 同口径: Failed==0 且 TTFT/TPOT 双达标 -> PASS"""
+    """与 report.py sla_verdict 同口径: Failed==0 且 TTFT/TPOT 双达标 -> PASS
+    （evalscope 失败哨兵 -1000 视为无指标, 不参与达标判定）"""
     if not m:
         return "-"
     failed = m.get(K_FAIL) or 0
-    ttft = m.get(K_TTFT)
-    tpot = m.get(K_TPOT)
+    ttft, tpot = m.get(K_TTFT), m.get(K_TPOT)
     if failed:
         return "FAIL"
     if ttft is None or tpot is None:
         return "-"
-    ok = ttft <= ttft_sla and tpot <= tpot_sla
-    return "PASS" if ok else "FAIL"
+    try:
+        ttft, tpot = float(ttft), float(tpot)
+    except (TypeError, ValueError):
+        return "-"
+    if ttft < 0 or tpot < 0:
+        return "-"   # 全挂哨兵: 无指标, 而非达标
+    return "PASS" if (ttft <= ttft_sla and tpot <= tpot_sla) else "FAIL"
 
 
 def main():
@@ -89,18 +102,27 @@ def main():
         print("没有可对比的池结果")
         return 1
 
-    # SLA 判据从 config.dsv41.yaml 读
+    # SLA 判据从 config.dsv41.yaml 读——与 report.py 同源同口径:
+    # 场景 ID 推导复用 runner.parse_scenario / scenario_id（含 _pN{prefix_num}
+    # 前缀数后缀与 29.5%→29p5pct 高精度取整）, 手写推导丢后缀会让 SLA 列整列失配。
     sla_map = {}
-    cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.dsv41.yaml")
+    cfg = os.path.join(KIT_ROOT, "config.dsv41.yaml")
     try:
         import yaml
-        for line in yaml.safe_load(open(cfg, encoding="utf-8"))["scenarios"]:
-            parts = [x.strip() for x in line.split(",")]
-            kfmt = (lambda n: f"{n//1024}k" if n % 1024 == 0 else str(n))
-            ilen = int(parts[1][:-1]) * 1024 if parts[1].endswith("k") else int(parts[1])
-            olen = int(parts[2][:-1]) * 1024 if parts[2].endswith("k") else int(parts[2])
-            hit = 0 if float(parts[3]) == 0 else f"{round(float(parts[3])*100)}pct"
-            sla_map[f"{parts[0]}_{kfmt(ilen)}_{kfmt(olen)}_hit{hit}"] = (int(parts[5]), int(parts[6]))
+        from runner import parse_scenario, scenario_id
+        with open(cfg, encoding="utf-8") as f:
+            scenarios = (yaml.safe_load(f) or {}).get("scenarios") or []
+        # 逐行隔离: 单条坏场景行只跳过自己, 不让后面的行跟着丢 SLA 列
+        for line in scenarios:
+            line = str(line).strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                sc = parse_scenario(line)
+            except (TypeError, ValueError) as e:
+                print(f"  [warn] 场景行解析失败, 跳过该行: {line!r} ({e})")
+                continue
+            sla_map[scenario_id(sc)] = (sc["ttft_sla_ms"], sc["tpot_sla_ms"])
     except Exception as e:  # noqa: BLE001
         print(f"  [warn] 读 config.dsv41.yaml 失败，SLA 判定列跳过: {e}")
 

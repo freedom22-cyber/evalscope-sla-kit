@@ -1,12 +1,14 @@
 # ============================================================================
-# evalscope 摸高测试配置
+# evalscope 摸高测试配置（dsv41 PD 服务）
 # ----------------------------------------------------------------------------
-# 使用方法:
-#   1. 修改 service 段为被测服务地址/模型名/tokenizer 路径
-#   2. 在 scenarios 段中注释/取消注释行来选择要跑的场景
-#   3. bash run.sh            # 顺序跑所有启用场景（nohup 后台）
-#      bash run.sh --dry-run  # 只打印命令不执行
-#      python3 report.py      # 跑完后汇总所有场景结果为一张表
+# 使用方法（注意: run.sh / runner.py 默认读同目录 config.yaml; 本文件是
+# dsv41 专用配置, 必须显式 --config 指定, 直接 bash run.sh 跑的是 config.yaml）:
+#   1. 在 scenarios 段中注释/取消注释行来选择要跑的场景
+#   2. bash run.sh --config config.dsv41.yaml            # 顺序跑所有启用场景（nohup 后台）
+#      bash run.sh --config config.dsv41.yaml --dry-run  # 只打印命令不执行
+#      python3 report.py                                  # 跑完后汇总所有场景结果为一张表
+#      python3 compare_pools.py                           # mooncake/memcache 两池对照表
+# Mooncake 池对照专用覆盖配置见 config.dsv41.mooncake.yaml（base_config 继承本文件）。
 # ============================================================================
 
 service:
