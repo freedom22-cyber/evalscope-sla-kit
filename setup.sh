@@ -3,6 +3,8 @@
 # 一键安装环境（Linux 目标主机 / 容器内执行）
 # 安装: evalscope[perf] + 数据集生成依赖（torch/transformers 由镜像自带则跳过）
 #       + BFCL v4 函数调用评测线的独立 venv（可选; 装失败仅告警, 不影响其余线）
+#       + SWE-bench_Pro 线环境检查（可选; 只检查不修复, 完整准备见
+#         tools/prepare_swe_bench_env.sh）
 # 用法:
 #   bash setup.sh              # 常规安装（清华 pip 源）
 #   bash setup.sh --cn-proxy   # 内网需代理时先设置 http_proxy/https_proxy
@@ -106,6 +108,17 @@ else
   fi
 fi
 
+echo "== [3.6/4] SWE-bench_Pro 环境检查（可选线, 只检查不修复） =="
+# SWE 线的评测环境（docker unix relay / qemu binfmt / 容器内 venv 补丁）不在
+# setup 职责内——由 tools/prepare_swe_bench_env.sh（仓库内副本）幂等准备。
+# 这里只做存在性检查: 失败/未就绪仅告警, 不中断安装（set -e 用 || 兜住）。
+if "$PY" swe_runner.py env-check; then
+  echo "  SWE 环境就绪（bash run.sh --swe status 可监控评测）"
+else
+  echo "警告: SWE 环境未就绪 —— SWE-bench_Pro 线不可用（其余测试线不受影响）"
+  echo "  完整准备（宿主机执行, 幂等）: bash tools/prepare_swe_bench_env.sh"
+fi
+
 echo "== [4/4] 验证 =="
 "$PY" -c "from evalscope.perf.main import run_perf_benchmark; print('evalscope.perf 导入 OK')"
 "$PY" -c "import yaml; print('pyyaml OK')"
@@ -125,3 +138,5 @@ echo "  1. 编辑 config.yaml（url / model / tokenizer_path / 场景开关）"
 echo "  2. bash run.sh --dry-run   预检命令"
 echo "  3. bash run.sh             开始摸高（nohup 后台）"
 echo "  4. bash run.sh --bfcl      函数调用精度评测（可选线, bfcl-venv 就绪时可用）"
+echo "  5. bash run.sh --swe status  SWE-bench_Pro 评测监控（可选线, 需先跑"
+echo "     tools/prepare_swe_bench_env.sh 准备 relay/binfmt/venv 补丁）"

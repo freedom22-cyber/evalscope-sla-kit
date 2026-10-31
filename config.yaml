@@ -296,3 +296,45 @@ bfcl:
   underscore_to_dot: true
 
 # ============================================================================
+# SWE-bench_Pro 精度评测（swe_runner.py, 第七条测试线——只读监控 + 补跑）
+# ----------------------------------------------------------------------------
+# agentic 精度评测: 模型生成补丁 → 每实例独立 amd64 沙箱容器跑金标测试 →
+# resolved 率（ModelScope ScaleAI/SWE-bench_Pro, 实际 642 条）。
+# **全量评测不由本 kit 驱动**: live 分批驱动在 /mnt/sfs_turbo/c00803992/swe_pro
+# （run_all_batches.sh, 642 实例按窗口 32 分批, 每批拉镜像→评→prune）, 产物
+# 也在那里——**勿移动/修改/删除该目录**（watcher/驱动进程正按这些路径工作）。
+# 本 runner 只提供 status / aggregate / rerun-list / env-check / start-rerun。
+# 用法: bash run.sh --swe status        # 状态总览（--swe 后透传子命令）
+#       python3 swe_runner.py status --json
+#       python3 swe_runner.py aggregate
+#       python3 swe_runner.py start-rerun        # 打印补跑命令（dry-run）
+# 注意: url/model 不回退 service 段——live 评测固定打 dsv4 服务, 与 kit 的
+# service 段（glm5.3 网关）指向不同, 必须显式写。
+# ============================================================================
+swe:
+  # live 工作区（驱动脚本/logs/results/rerun 清单都在这里; --work-dir 可覆盖,
+  # 未显式配置的派生路径会跟着它推）
+  work_dir: /mnt/sfs_turbo/c00803992/swe_pro
+  # 评测结果 work-dir（reviews/predictions/swe_bench_pro_log; 聚合器读它）
+  results_dir: /mnt/sfs_turbo/c00803992/swe_pro/results/accuracy/swe_bench_pro_dsv4
+  # 补跑清单（EVALSCOPE_INSTANCE_FILE 按行取 instance_id; '#' 行是分组注释）
+  rerun_ids: /mnt/sfs_turbo/c00803992/swe_pro/rerun_ids.txt
+  # SWE-bench_Pro-os 仓库（固定 commit ca10a60; extra_params 指定免重复 clone）
+  repo_path: /mnt/sfs_turbo/c00803992/swe_bench_pro_os/repo
+  # 被测服务（dsv4 PD 服务; 不回退 service 段, 见上方说明）
+  api_url: http://192.168.0.9:18020/v1/chat/completions
+  model: dsv4
+  # 容器内 evalscope 客户端 venv（摸高/精度线同款; 切勿往里装东西）
+  venv: /tmp/bench-venv
+  # 评测所在容器（宿主机发起时经 docker exec 进容器）
+  container: ais-bench
+  # docker unix relay socket（容器内沙箱经它调宿主 dockerd; 勿用 TCP 代理）
+  relay_socket: /mnt/sfs_turbo/c00803992/dockersock/docker.sock
+  # docker 根盘（每批 ~66GB 镜像涨落, status 报余量; 容器内不可见）
+  disk_mount: /mnt/docker
+  # 每批实例数（run_all_batches.sh WINDOW, 仅状态展示用）
+  batch_window: 32
+  # 数据集总条数（实际 642; 文档写 731 不准）
+  total_instances: 642
+  # 补跑默认批内并发（start-rerun 未显式给 --eval-batch-size 时）
+  eval_batch_size: 16
