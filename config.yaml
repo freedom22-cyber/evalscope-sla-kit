@@ -231,3 +231,68 @@ functional:
   skip_long_context_api: true
   long_context_api_tokens: 8192    # 长上下文填充 token 数
   output_dir: results/functional   # 报告与各用例响应原文的落盘根目录
+
+# ============================================================================
+# BFCL v4 函数调用评测（bfcl_runner.py, Berkeley Function-Calling Leaderboard）
+# ----------------------------------------------------------------------------
+# 用 evalscope 内置 bfcl_v4 适配器 + bfcl-eval 2025.10.27.1 评函数调用能力,
+# 输出 per-subset acc + 官方公式 Overall:
+#   Overall = Agentic(web_search+memory)×40% + Multi-Turn×30% + Live×10%
+#           + Non-Live×10% + Hallucination×10%（live_relevance 不计分,
+#           未跑的类别按 0 分计权——部分子集跑分时 Overall 会偏低, 属预期）
+# 用法: bash run.sh --bfcl           # 后台跑启用子集（日志 logs/bfcl_*.log）
+#       bash run.sh --bfcl -f        # 前台
+#       python3 bfcl_runner.py --list / --dry-run / --only simple_python,irrelevance
+#       python3 bfcl_runner.py --limit 10 --only simple_python,irrelevance   # 冒烟
+#       python3 bfcl_runner.py --report         # 重打已有结果汇总表
+# 评测进程在 ais-bench 容器内的独立 venv 跑（venv_python, NFS 共享盘,
+# 容器重建不丢; 不碰 /tmp/bench-venv）; 宿主机发起时自动 docker exec 进容器。
+# ============================================================================
+bfcl:
+  # bfcl-venv 解释器（容器内路径; 需预装 evalscope==1.14.1 + bfcl-eval==2025.10.27.1）
+  venv_python: /mnt/sfs_turbo/c00803992/bfcl-venv/bin/python
+  # 评测所在容器（宿主机发起 run.sh --bfcl 时经 docker exec 进入）
+  container: ais-bench
+  # 被测服务（留空 = 用 service.url / service.model / request.api_key）
+  # 当前指向 dsv41 PD 服务（SWE-bench_Pro 评测同款端点）
+  url: http://192.168.0.9:18020/v1
+  model: dsv4
+  api_key: "EMPTY"
+  # 启用子集（默认离线全集 17 个: Non-Live 6 + Live 4 + Relevance 3 + Multi-Turn 4）
+  # web_search / memory 子集默认不开（外部依赖, 见下面两个开关）
+  enabled_subsets:
+    - simple_python
+    - simple_java
+    - simple_javascript
+    - multiple
+    - parallel
+    - parallel_multiple
+    - live_simple
+    - live_multiple
+    - live_parallel
+    - live_parallel_multiple
+    - irrelevance
+    - live_irrelevance
+    - live_relevance
+    - multi_turn_base
+    - multi_turn_miss_func
+    - multi_turn_miss_param
+    - multi_turn_long_context
+  # web_search 子集开关: 需要 serpapi_api_key 且有调用额度, 否则该类得 0
+  enable_web_search: false
+  # memory 子集开关: memory_vector 首次运行需从 HF 下载模型（本机 HF 直连不通）
+  enable_memory: false
+  # SerpAPI key（web_search 用; 留空 = 不注入）
+  serpapi_api_key: ""
+  # 每个子集只评 N 条（冒烟）; 0 = 全量
+  limit: 0
+  # 评测并发（eval_batch_size, 官方示例 10）
+  eval_batch_size: 10
+  # 采样温度（BFCL 只支持 temperature, 其他生成参数会被忽略）
+  temperature: 0
+  # 被测模型是否原生支持 function calling; false = 用提示词绕过（非 FC 模型用）
+  is_fc_model: true
+  # 模型在函数名中拒绝点号时自动把点号转下划线（官方默认 true）
+  underscore_to_dot: true
+
+# ============================================================================

@@ -11,6 +11,7 @@
 | 精度（pass@k） | `bash run.sh --accuracy` | `results/accuracy/<tag>_pass@k<k>_r<N>/…` + `scores.md` |
 | 功能（API E2E） | `bash run.sh --functional` | `results/functional/e2e_<时间戳>/report.md` + 各用例响应原文 |
 | 智能体回放（AgentX） | `bash run.sh --agentx` | `results/agentx/<tag>_<时间戳>/…`（summary/metrics json + 关键指标打印） |
+| 函数调用（BFCL v4） | `bash run.sh --bfcl` | `results/bfcl/<tag>[_limit<N>]/reports/…/bfcl_v4.json` + `results/bfcl/scores.md` |
 
 ## 目录结构
 
@@ -22,13 +23,14 @@ evalscope_sla_kit/
 ├── runner.py           # 摸高: 场景解析 + 数据集生成 + evalscope 命令构建执行
 ├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + pass@k/mean 分数解析汇总
 ├── agentx_runner.py    # AgentX: 智能体回放（cc-traces 公共语料 / local:<目录> 本地裁剪语料）
+├── bfcl_runner.py      # BFCL: 函数调用评测（22 子集, evalscope bfcl_v4 适配器, 独立 bfcl-venv）
 ├── scripts/run_api_e2e.py  # 功能测试: API E2E 框架（50 条用例 C01-C61 单一编号, 全非流式, PASS/WARN/FAIL/SKIP）
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI，端口 8300）
 ├── web/index.html      # Web 控制台前端（五页签单页应用，深色玻璃拟态）
 ├── tools/              # gsm8k 数据集生成 / jsonl→prompts / weka 裁剪 / 守护脚本
 ├── datasets/           # 生成的数据集（按文件名复用；weka 本地语料也放这里）
-├── results/            # 摸高 + 精度 + 功能 + AgentX 输出
+├── results/            # 摸高 + 精度 + 功能 + AgentX + BFCL 输出
 └── logs/               # 运行日志
 ```
 
@@ -73,6 +75,10 @@ python3 webapp.py --port 8300     # 浏览器打开 http://<主机IP>:8300
 - 两种运行入口：顶部按钮（默认参数）/ 参数卡按钮（自定义参数）
 - 运行 / 停止（`killpg` 杀进程树）
 - 精度汇总：渲染 `scores.md`（pass@k 表格）
+
+### 7. BFCL 函数调用
+- 子集勾选（按 6 大类分组，web_search / memory 默认不勾）+ 运行参数
+- 运行 / 停止（`killpg` 杀进程树），报告渲染 `results/bfcl/scores.md`（acc 表 + Overall）
 
 ## 快速开始
 
@@ -410,6 +416,103 @@ bash run.sh --agentx -f --only weka8
 
 > 中途终止用 Ctrl-C（SIGINT）：aiperf 收到 SIGINT 后优雅取消并落盘已完成的
 > 请求，指标仍可解析。
+
+## BFCL 函数调用评测（bfcl_runner.py）
+
+用 evalscope 的 bfcl_v4 适配器跑 Berkeley Function-Calling Leaderboard v4
+（22 个子集 / 6 大类），测**函数调用精度**（AST 匹配 / 多轮状态机 / 幻觉拒绝），
+不是性能。官方文档:
+<https://evalscope.readthedocs.io/zh-cn/latest/third_party/bfcl_v4.html>
+
+依赖装在**独立 venv**（不碰 /tmp/bench-venv，不动 SWE 评测）:
+`/mnt/sfs_turbo/c00803992/bfcl-venv`（NFS 上，容器重建不丢）。
+评测命令统一经 `docker exec ais-bench` 派发到容器内用该 venv 执行
+（webapp 在容器内时自动直跑，不加 docker 前缀）。
+
+```bash
+bash run.sh --bfcl                                   # 后台跑启用子集（日志 logs/bfcl_*.log）
+bash run.sh --bfcl -f                                # 前台跑
+bash run.sh --bfcl -f --only simple_python,irrelevance --limit 10   # 冒烟（20 请求）
+python3 bfcl_runner.py --list                        # 列出 22 个子集与所属类别
+python3 bfcl_runner.py --dry-run                     # 只打印 docker exec 命令不执行
+bash run.sh --bfcl -f --resume                       # 断点续跑（复用 work-dir 已有推理）
+python3 bfcl_runner.py --report                      # 汇总 results/bfcl/ 各次结果
+```
+
+结果: `results/bfcl/<tag>[_limit<N>]/reports/<模型>/bfcl_v4.json`（tag 默认=模型名），
+每次运行追加写 `results/bfcl/scores.md`（子集 acc 表 + 类别汇总 + OVERALL）。
+
+### config.yaml bfcl 段
+
+```yaml
+bfcl:
+  venv_python: /mnt/sfs_turbo/c00803992/bfcl-venv/bin/python   # 容器内可见的独立 venv
+  container: ais-bench                 # 派发目标容器
+  url: http://192.168.0.9:18020/v1     # 缺省回退 service.url
+  model: dsv4                          # 缺省回退 service.model
+  api_key: "EMPTY"                     # 缺省回退 request.api_key
+  enabled_subsets: [...]               # 默认 17 个离线子集（见 --list）
+  enable_web_search: false             # 追加 web_search 2 个子集（要 SERPAPI_API_KEY）
+  enable_memory: false                 # 追加 memory 3 个子集（要联网拉 HF 嵌入模型）
+  serpapi_api_key: ""
+  limit: 0                             # >0 时每个子集只取前 N 条
+  eval_batch_size: 10
+  temperature: 0
+  is_fc_model: true                    # 端点原生函数调用; 冒烟 acc=0 时改 false 走提示词解析模式
+  underscore_to_dot: true              # 模型名下划线→点号（BFCL handler 约定）
+```
+
+### Overall 计分公式（与 evalscope 官方聚合逐项对齐）
+
+```
+Overall = 40%·Agentic + 30%·MultiTurn + 10%·Live + 10%·NonLive + 10%·Hallucination
+Agentic       = mean( mean(web_search×2), mean(memory×3) )   # 两块均值再取均值
+MultiTurn     = mean( multi_turn×4 )                          # 不加权
+Live          = Σ(score×num) / Σnum                           # 唯一按样本数加权的类别
+NonLive       = mean( simple_ast, multiple, parallel, parallel_multiple )
+                其中 simple_ast = mean(simple_python, simple_java, simple_javascript)
+Hallucination = mean( live_irrelevance, irrelevance )
+```
+
+- `live_relevance` 会跑但**不计分**（官方口径）。
+- 只跑部分子集时，缺失类别按 0 分计权（权重**不**重归一化）——部分运行的
+  OVERALL 与全量表没有可比性，看分项表即可。runner 会打印缺项类别提醒。
+- runner 本地重算 OVERALL 并与 evalscope 报告值交叉核对（差 >1e-3 时告警）。
+
+### venv 重建（bfcl-venv 装法）
+
+`setup.sh` 的 [3.5/4] 步骤已内置下述安装（幂等, 可选线装失败仅告警）;
+以下命令用于手动重建:
+
+```bash
+docker exec ais-bench /usr/local/python3.12.13/bin/python3.12 -m venv \
+  /mnt/sfs_turbo/c00803992/bfcl-venv
+docker exec ais-bench /mnt/sfs_turbo/c00803992/bfcl-venv/bin/pip install \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple \
+  "evalscope==1.14.1" "bfcl-eval==2025.10.27.1" "pyarrow==21.0.0" soundfile
+```
+
+两个**必须显式补**的依赖（都是上游声明缺失踩出来的坑）：
+
+| 包 | 原因 |
+|---|---|
+| `pyarrow==21.0.0` | bfcl-eval 钉 `numpy==1.26.4`，但解析器默认装最新 pyarrow 26 要求 numpy>=2 → `import evalscope` 直接崩；pyarrow 21 是最后一个兼容 numpy 1.x 且满足 datasets>=21 门槛的版本 |
+| `soundfile` | bfcl-eval → qwen-agent 的 `utils.py` 顶层 `import soundfile`，但 qwen-agent 没声明该依赖 → 打分时 `eval_runner` import 崩（报错是 `cannot import name '_evaluate_single_agentic_entry'`，有误导性） |
+
+> venv 里 torch 是 2.15.0+cu132（装 CPU 版时 pytorch 源读超时，后续被 tuna 的
+> CUDA 版顶替）。import 正常，离线子集不用 GPU，可不动；要换 CPU 版：
+> `pip install torch --index-url https://download.pytorch.org/whl/cpu`。
+
+### 已知风险 / 边界
+
+- `memory_*` 3 子集要拉 HuggingFace 嵌入模型（sentence-transformers）：容器内
+  直连 huggingface.co 不通，需 `HF_ENDPOINT=https://hf-mirror.com` 且磁盘够。
+  默认 `enable_memory: false` 不受影响。
+- `web_search_*` 2 子集要真实 Google 搜索，需 `serpapi_api_key`。默认关。
+- dsv4 冒烟（limit=10）：`simple_python` acc=1.0、`irrelevance` acc=0.9，
+  说明端点**原生函数调用可用**，`is_fc_model: true` 保持即可。
+- 多轮/智能体子集（multi_turn、web_search、memory）会真实执行模型给出的
+  工具调用（含 shell 命令），全量跑前确认容器环境可承受。
 
 ## config.yaml 说明
 

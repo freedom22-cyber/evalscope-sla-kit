@@ -1356,6 +1356,145 @@ def api_agentx_report():
     return {"ok": True, "report": "\n".join(block[-12:]), "path": log_path}
 
 
+# ----------------------------------------------------- BFCL 函数调用评测 -------
+_BFCL_TASK = {}
+_BFCL_PROC = None
+
+
+@app.get("/api/bfcl/status")
+def api_bfcl_status():
+    return dict(_BFCL_TASK) if _BFCL_TASK else {"status": "not_started"}
+
+
+@app.get("/api/bfcl/config")
+def api_bfcl_config():
+    """读 config bfcl 段（生效 url/model/参数）+ 全部 22 个子集清单（带类别分组）。"""
+    import bfcl_runner
+    cfg, _ = effective_config()
+    bf = bfcl_runner.resolve_bfcl_config(cfg)
+    try:
+        enabled = bfcl_runner.resolve_subsets(bf)
+    except ValueError:
+        enabled = []
+    return {
+        "ok": True,
+        "url": bf.get("url"), "model": bf.get("model"),
+        "categories": [{"name": cat, "subsets": subs, "note": note}
+                       for cat, subs, note in bfcl_runner.SUBSET_CATEGORIES],
+        "enabled": enabled,
+        "params": {"limit": bf.get("limit") or 0,
+                   "eval_batch_size": bf.get("eval_batch_size"),
+                   "temperature": bf.get("temperature")},
+        "venv_python": bf.get("venv_python"),
+        "dispatch": "容器内直接执行" if not bfcl_runner.resolve_dispatch(bf)
+                    else f"docker exec {bf.get('container')}",
+    }
+
+
+@app.post("/api/bfcl/run")
+def api_bfcl_run(payload: dict = Body(default={})):
+    """启动 BFCL 评测: 勾选子集与 limit/batch 走 CLI 覆盖（--only/--limit/--batch-size）。"""
+    import bfcl_runner
+    # CAS 防双提交
+    with STATE_LOCK:
+        if _BFCL_TASK.get("status") == "running":
+            return JSONResponse({"ok": False, "error": "BFCL 测试正在运行中"}, status_code=409)
+        _BFCL_TASK.clear()
+        _BFCL_TASK.update(status="running")
+    subsets = payload.get("subsets")
+    if not subsets or not isinstance(subsets, list):
+        with STATE_LOCK:
+            _BFCL_TASK.update(status="error", finished=_now(), error="未勾选任何子集")
+        return JSONResponse({"ok": False, "error": "请至少勾选一个子集"}, status_code=400)
+    unknown = [s for s in subsets if s not in bfcl_runner.ALL_SUBSETS]
+    if unknown:
+        with STATE_LOCK:
+            _BFCL_TASK.update(status="error", finished=_now(), error=f"未知子集: {unknown}")
+        return JSONResponse({"ok": False, "error": f"未知子集: {unknown}"}, status_code=400)
+    # effective_config 写临时 YAML（与精度/AgentX 同模式, 保证读到页面服务配置;
+    # bfcl.url/model 留空时才会回退到 service 段）
+    cfg, _ = effective_config()
+    import tempfile, yaml as _yaml
+    tmp_dir = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    tmp_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False,
+                                          dir=tmp_dir, encoding="utf-8")
+    _yaml.dump(cfg, tmp_cfg, allow_unicode=True, default_flow_style=False)
+    tmp_cfg.close()
+    cmd = ["python3", os.path.join(KIT_ROOT, "bfcl_runner.py"), "--config", tmp_cfg.name,
+           "--only", ",".join(subsets)]
+    limit = payload.get("limit")
+    if limit:
+        cmd += ["--limit", str(int(limit))]
+    batch = payload.get("batch_size")
+    if batch:
+        cmd += ["--batch-size", str(int(batch))]
+    temperature = payload.get("temperature")
+    if temperature is not None and str(temperature) != "":
+        cmd += ["--temperature", str(float(temperature))]
+
+    def _cleanup():
+        try: os.unlink(tmp_cfg.name)
+        except OSError: pass
+    def _run_and_cleanup():
+        try:
+            _run_bfcl(cmd)
+        finally:
+            _cleanup()
+    threading.Thread(target=_run_and_cleanup, daemon=True).start()
+    return {"ok": True, "subsets": len(subsets)}
+
+
+def _run_bfcl(cmd):
+    """与 _run_generic 同构的 BFCL 执行体（独立句柄 _BFCL_PROC 供 stop 杀进程树）。"""
+    global _BFCL_PROC
+    log_path = os.path.join(LOGS_DIR, f"bfcl_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    _BFCL_TASK.update(started=_now(), finished=None, error=None, log_path=log_path)
+    with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
+        try:
+            logf.write(f"[bfcl] 命令: {' '.join(cmd)}\n")
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                                    cwd=KIT_ROOT, start_new_session=True)
+            _BFCL_PROC = proc
+            # Popen 之后发现已被请求停止：立即杀掉，避免幽灵进程
+            if _BFCL_TASK.get("status") == "stopped":
+                _kill_tree(proc)
+                _BFCL_PROC = None
+                return
+            r = proc.wait()
+            _BFCL_PROC = None
+            if _BFCL_TASK.get("status") == "stopped":
+                pass   # 已被 stop 标记，不覆盖
+            elif r == 0:
+                _BFCL_TASK.update(status="done", finished=_now())
+            else:
+                _BFCL_TASK.update(status="error", finished=_now(), error=f"exit code {r}")
+        except Exception as e:
+            if _BFCL_TASK.get("status") != "stopped":
+                _BFCL_TASK.update(status="error", finished=_now(), error=str(e))
+
+
+@app.post("/api/bfcl/stop")
+def api_bfcl_stop():
+    global _BFCL_PROC
+    if _BFCL_TASK.get("status") != "running":
+        return JSONResponse({"ok": False, "error": "BFCL 测试未在运行"}, status_code=409)
+    killed = _kill_tree(_BFCL_PROC)
+    _BFCL_TASK.update(status="stopped", finished=_now())
+    _BFCL_PROC = None
+    return {"ok": True, "killed": killed}
+
+
+@app.get("/api/bfcl/report")
+def api_bfcl_report():
+    """读 results/bfcl/scores.md。"""
+    path = os.path.join(RESULTS_DIR, "bfcl", "scores.md")
+    if not os.path.exists(path):
+        return {"ok": False, "report": None}
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    return {"ok": True, "report": text, "path": path}
+
+
 # ----------------------------------------------------- 日志打包下载 -------
 @app.get("/api/projects/{pid}/pack")
 def api_project_pack(pid: str):
