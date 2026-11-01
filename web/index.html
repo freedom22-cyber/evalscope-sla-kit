@@ -1873,6 +1873,16 @@ function buildSWEStatusCard(st){
   const rr=st.rerun||{};
   kv.append(el('div',{cls:'k'},'补跑队列'), el('div',{cls:'v'},
     (rr.count!=null?rr.count:'-')+' 条（见下方补跑队列卡）'));
+  /* rerun 模式: 进度行/日志在 rerun_part*.log, 不在这里看不到任何 rerun 痕迹 */
+  if(st.rerun_log){
+    const rl=el('div',{cls:'v'});
+    rl.innerHTML='<code>'+esc(st.rerun_log)+'</code> ';
+    if(st.rerun_active) rl.innerHTML+='<span class="pill running">写入中</span> ';
+    const b=el('button',{cls:'small'},'查看日志');
+    b.onclick=()=>showLog(st.rerun_log);
+    rl.append(b);
+    kv.append(el('div',{cls:'k'},'rerun 日志'), rl);
+  }
   c.append(kv);
   if(st.namespace==='container'){
     c.append(el('div',{cls:'hint',style:'margin-top:10px'},

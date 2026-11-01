@@ -806,7 +806,18 @@ def api_log(path: str, offset: int = 0, tail: int = 0):
     """
     ap = os.path.abspath(path)
     B = os.path.abspath(KIT_ROOT)
-    if not (ap == B or ap.startswith(B + os.sep)):
+    # SWE 日志目录在 kit 根之外（swe_pro/logs）: web 控制台的 SWE 状态卡
+    # 要能 showLog 查看 batch/rerun 运行日志, 只放行该日志目录本身
+    swe_logs = None
+    try:
+        import swe_runner
+        cfg0, _ = effective_config()
+        swe_logs = os.path.abspath(swe_runner.resolve_swe_config(cfg0)["logs_dir"])
+    except Exception:  # noqa: BLE001  # swe 配置不可用时只是少放行一个目录
+        pass
+    allowed = (ap == B or ap.startswith(B + os.sep)
+               or (swe_logs and (ap == swe_logs or ap.startswith(swe_logs + os.sep))))
+    if not allowed:
         return JSONResponse({"ok": False, "error": "路径越界"}, status_code=400)
     if not os.path.isfile(ap):
         return {"ok": False, "error": "文件不存在", "lines": [], "total": 0}

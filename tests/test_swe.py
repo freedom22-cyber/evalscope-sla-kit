@@ -127,6 +127,14 @@ def test_parse_progress_line():
     check("残缺进度行返回 None",
           swe_runner.parse_progress_line("Evaluating[swe_bench_pro] 94%") is None)
 
+    # 无 ETA 阶段（尚无完成实例）: tqdm 单位变 it/s、rate/eta 都是 "?"
+    early = ("Evaluating[swe_bench_pro]:   0%|          | 0/68 "
+             "[02:00<?, ?it/s]")
+    p3 = swe_runner.parse_progress_line(early)
+    check("无 ETA 行: n/total/rate",
+          p3["n"] == 0 and p3["total"] == 68 and p3["rate"] == "?"
+          and p3["eta"] == "?")
+
 
 def test_find_progress():
     print("[progress] find_progress（\\r 刷新行 + 取最后一条）")
@@ -157,6 +165,16 @@ def test_find_progress():
               prog2 is not None and prog2["n"] == 16 and prog2["ts"] is None)
         check("缺失文件返回 None",
               swe_runner.find_progress(os.path.join(td, "nope.log")) is None)
+        # 进度行被大量后续实例输出淹没（rerun 日志形态, ~320KB 噪声）:
+        # 固定 200KB 尾窗会漏, 块回扫必须能找到
+        p3 = os.path.join(td, "rerun_part1.log")
+        with open(p3, "wb") as f:
+            f.write(b"Evaluating[swe_bench_pro]:   0%| 0/68 "
+                    b"[02:00<?, ?it/s]\n")
+            f.write((b"[INFO:ms_enclave] " + b"x" * 80 + b"\n") * 4000)
+        prog3 = swe_runner.find_progress(p3)
+        check("进度行被噪声淹没仍可回扫找到",
+              prog3 is not None and prog3["n"] == 0 and prog3["total"] == 68)
 
 
 # ---------------------------------------------------------------- eval_rc --
