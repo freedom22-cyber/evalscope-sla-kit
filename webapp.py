@@ -439,6 +439,41 @@ def api_get_config():
             "host_header_effective": runner.build_headers(cfg)}
 
 
+@app.post("/api/service/test")
+def api_service_test(payload: dict = Body(default={})):
+    """配置页「测试连接」: 从 webapp 容器侧探测 <base>/v1/models。
+
+    用后端探测代替浏览器直连: 浏览器侧可能走代理或本机到目标端口的网络不通,
+    直连会误报超时, 且浏览器路径不代表评测流量的真实路径 (评测由容器发起)。
+    """
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "url 为空"}, status_code=400)
+    base = re.sub(r"/v1/.*$", "", url)
+    target = base + "/v1/models"
+    cfg, _ = effective_config()
+    key = ((cfg.get("request") or {}).get("api_key") or "").strip()
+    headers = {"Authorization": "Bearer " + key} if key and key.upper() != "EMPTY" else {}
+    import urllib.request, urllib.error
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(target, headers=headers), timeout=8) as r:
+            body = r.read().decode("utf-8", "replace")
+            models = []
+            try:
+                models = [m.get("id") for m in json.loads(body).get("data", []) if isinstance(m, dict)]
+            except Exception:
+                pass
+            return {"ok": True, "status": r.status,
+                    "latency_ms": int((time.time() - t0) * 1000), "models": models}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "status": e.code, "error": f"HTTP {e.code}（可能需要认证）",
+                "latency_ms": int((time.time() - t0) * 1000)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}",
+                "latency_ms": int((time.time() - t0) * 1000)}
+
+
 @app.post("/api/config")
 def api_set_config(payload: dict = Body(...)):
     st = load_state()
