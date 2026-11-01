@@ -181,6 +181,25 @@ accuracy:
 #   详见 agentx_runner.py 头部说明）
 # ============================================================================
 agentx:
+  # agentx 可执行文件（环境变量 AGENTX_BIN 优先）。
+  # 这里指向 kit 自带的独立 venv（agentx-harness 1.0.7，含编译好的 crick 0.0.8），
+  # 不用 PATH 上的 agentx —— 宿主 /usr/local/bin 只有坏 wrapper，容器 venv 里
+  # 也没装（crick 需编译，容器到 pypi 通道不稳）。
+  bin: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/agentx-venv/bin/agentx"
+  # agentx-harness 需要的子进程环境变量（覆盖 runner 继承的环境）
+  # - HF_ENDPOINT: 容器内 huggingface.co 直连不通，走 hf-mirror.com
+  # - HF_HOME / HF_HUB_CACHE: 公开语料 + tokenizer 的本地缓存（首次跑会下载 GB 级）
+  # - AIPERF_DATASET_MMAP_CACHE_DIR/BASE_PATH: harness 的数据集 mmap 缓存
+  # 已预置的缓存（2026-10-30 已有 cc-traces-weka-062126 1.8G + zai-org/GLM-5.3
+  # tokenizer, 来自 agentx-eval 的同名缓存软链）:
+  #   /mnt/sfs_turbo/c00803992/agentx-eval/hf_cache
+  env:
+    HF_ENDPOINT: "https://hf-mirror.com"
+    HF_HUB_DISABLE_XET: "1"
+    HF_HOME: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/hf"
+    HF_HUB_CACHE: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/hf/hub"
+    AIPERF_DATASET_MMAP_CACHE_DIR: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/aiperf"
+    AIPERF_DATASET_MMAP_BASE_PATH: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/mmap"
   datasets:
     # "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"
     # tokenizer 留空 = 用 service.tokenizer_path（本地路径）

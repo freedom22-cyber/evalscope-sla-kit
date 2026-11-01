@@ -79,6 +79,10 @@ python3 webapp.py --port 8300     # 浏览器打开 http://<主机IP>:8300
 - 运行 / 停止（`killpg` 杀进程树）
 - 精度汇总：渲染 `scores.md`（pass@k 表格）
 
+### 6. AgentX 回放
+- 变体选择（cc-traces 公共语料 / `local:<目录>` 本地裁剪语料）+ 运行参数卡
+- 运行 / 停止（`killpg` 杀进程树），结果卡渲染 summary / 关键指标
+
 ### 7. BFCL 函数调用
 - 子集勾选（按 6 大类分组，web_search / memory 默认不勾）+ 运行参数
 - 运行 / 停止（`killpg` 杀进程树），报告渲染 `results/bfcl/scores.md`（acc 表 + Overall）

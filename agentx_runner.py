@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -134,6 +135,21 @@ def work_dir_of(tag: str) -> str:
     return os.path.join(AGENTX_DIR, f"{tag}_{time.strftime('%Y%m%d_%H%M%S')}")
 
 
+def resolve_agentx_bin(cfg: dict) -> str:
+    """agentx 可执行文件: 环境变量 AGENTX_BIN > config agentx.bin > PATH 上的 agentx。
+
+    与精度线的 EVALSCOPE_BIN 约定一致（见 accuracy_runner.resolve_evalscope_bin）。
+    显式给的路径找不到就照实报错——否则两台机器会静默跑不同版本的 harness。
+    """
+    explicit = os.environ.get("AGENTX_BIN") or (cfg.get("agentx") or {}).get("bin")
+    bin_path = explicit or "agentx"
+    if not shutil.which(bin_path):
+        print(f"警告: 未找到 agentx 可执行文件: {bin_path} "
+              f"(可用环境变量 AGENTX_BIN 覆盖; 或先跑 bash setup.sh 安装 agentx-harness)",
+              file=sys.stderr)
+    return bin_path
+
+
 def build_cmd(cfg: dict, v: dict, concurrency_override: int = None) -> tuple:
     """构建 agentx profile 命令；返回 (cmd, work_dir)。"""
     svc = cfg["service"]
@@ -143,7 +159,7 @@ def build_cmd(cfg: dict, v: dict, concurrency_override: int = None) -> tuple:
     # tokenizer: 行内字段 > service.tokenizer_path（本地路径直接用）
     tokenizer = v["tokenizer"] or svc.get("tokenizer_path") or ""
     cmd = [
-        "agentx", "profile",
+        resolve_agentx_bin(cfg), "profile",
         "--url", base_url_of(svc["url"]),
         "--endpoint", "/v1/chat/completions",
         "--model", svc["model"],
@@ -205,6 +221,9 @@ def build_cmd(cfg: dict, v: dict, concurrency_override: int = None) -> tuple:
     api_key = req.get("api_key") or ""
     if api_key:
         cmd += ["--api-key", api_key]
+    # 透传开关: config agentx.extra_args（冒烟时缩小条目数/时长, 例如
+    # ["--num-dataset-entries", "8", "--benchmark-duration", "120"]）
+    cmd += [str(a) for a in ((cfg.get("agentx") or {}).get("extra_args") or [])]
     return cmd, work_dir
 
 
@@ -251,7 +270,11 @@ def run_variant(cfg: dict, v: dict, dry_run: bool, concurrency: int = None) -> i
     if dry_run:
         return 0
     os.makedirs(work_dir, exist_ok=True)
-    r = subprocess.run(cmd, cwd=KIT_ROOT)
+    # agentx-harness 需要 HF 镜像/缓存等环境变量: config.yaml agentx.env 覆盖 os.environ
+    env = os.environ.copy()
+    for k, v in ((cfg.get("agentx") or {}).get("env") or {}).items():
+        env[str(k)] = str(v)
+    r = subprocess.run(cmd, cwd=KIT_ROOT, env=env)
     if r.returncode != 0:
         print(f"  [失败] exit={r.returncode}")
         return r.returncode

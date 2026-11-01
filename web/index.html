@@ -1033,6 +1033,8 @@ function statusCard(baseId, st, running, labelMap){
   c.append(el('h2',{}, iconEl('bolt'), el('span',{},'运行状态'), el('span',{cls:'hint'}, running?'进行中':'空闲')));
   const kv=el('div',{cls:'kv'});
   kv.append(el('div',{cls:'k'},'状态'), el('div',{cls:'v',html:pill(st.status||'not_started')}));
+  /* 本次启动的实际命令（agentx 运行时记录; 其他测试未设置则不显示） */
+  if(st.cmd) kv.append(el('div',{cls:'k'},'命令'), el('div',{cls:'v mono',style:'font-size:11px'}, st.cmd));
   const startV=el('div',{cls:'v'}, st.started||'-');
   if(running && st.started){
     startV.append(document.createTextNode(' '));
@@ -1366,6 +1368,15 @@ async function renderAgentX(){
     btn('用这些参数运行','play','primary',()=>runAgentX(true))));
   m.append(runCard);
 
+  /* 评测命令预览卡: 与实际执行逐参数一致, 参数输入即时联动刷新（去抖） */
+  m.append(el('div',{id:'agentx-cmd-card'}));
+  let _cmdTimer=null;
+  const _onAgentxParam=()=>{ if(_cmdTimer) clearTimeout(_cmdTimer); _cmdTimer=setTimeout(loadAgentXCommands,300); };
+  ['agentx_conc','agentx_only'].forEach(id=>{
+    const inp=$('#cfg-'+id); if(inp) inp.addEventListener('input',_onAgentxParam);
+  });
+  await loadAgentXCommands();
+
   m.append(el('div',{id:'agentx-status-card'}));
   m.append(el('div',{id:'agentx-report-card'}));
   await refreshAgentXStatus();
@@ -1409,6 +1420,50 @@ async function refreshAgentXStatus(){
   statusCard('agentx-status-card', st, running);
   if(running){ pollStatus('agentx', async()=>{ await refreshAgentXStatus(); await loadAgentXReport(); },5000); }
   else { await loadAgentXReport(); }
+}
+/* 评测命令预览: 后端复用 agentx_runner.build_cmd 构建, 与实际执行逐参数一致 */
+async function loadAgentXCommands(){
+  const card=$('#agentx-cmd-card'); if(!card) return;
+  const conc=$('#cfg-agentx_conc')?$('#cfg-agentx_conc').value:'';
+  const only=$('#cfg-agentx_only')?$('#cfg-agentx_only').value.trim():'';
+  const q=new URLSearchParams();
+  if(conc) q.set('concurrency',conc);
+  if(only) q.set('only',only);
+  const r=await api('/api/agentx/commands'+(q.toString()?'?'+q.toString():''));
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('braces'), el('span',{},'评测命令'),
+    el('span',{cls:'hint'}, '与实际执行逐参数一致 · 可复制到终端手动跑')));
+  if(!r.ok){ c.append(el('div',{cls:'muted'},'命令构建失败: '+(r.error||''))); card.append(c); return; }
+  /* 「运行 AgentX」按钮实际启动的 runner 命令 */
+  const wwrap=el('div',{style:'margin-top:10px'});
+  wwrap.append(el('div',{cls:'hint',style:'margin-bottom:4px'},'页面运行入口（runner 命令）'));
+  wwrap.append(el('pre',{cls:'log',style:'max-height:84px;margin:0'},r.wrapper||''));
+  const wb=el('button',{cls:'small',onclick:()=>copyText(r.wrapper||'',wb,'命令')},'复制命令');
+  wwrap.append(el('div',{cls:'row-actions',style:'margin-top:6px'}, wb));
+  c.append(wwrap);
+  /* 每变体实际发出的 agentx profile 命令 */
+  const cmds=r.commands||[];
+  if(!cmds.length){
+    c.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon('bolt')}),
+      el('div',{}, only?('没有匹配变体: '+esc(only)):'config.yaml agentx.datasets 无启用变体')));
+  }
+  cmds.forEach(cm=>{
+    const headKids=[el('code',{},esc(cm.tag))];
+    if(cm.error) headKids.push(el('span',{cls:'pill error',style:'font-size:10px'},'命令构建失败'));
+    c.append(el('div',{cls:'row-actions',style:'margin-top:14px'}, ...headKids));
+    if(cm.error){
+      c.append(el('div',{cls:'hint',style:'color:var(--destructive);margin-top:4px'},esc(cm.error)));
+    }else{
+      c.append(el('pre',{cls:'log',style:'max-height:140px;margin:6px 0'},cm.cmd));
+      const b=el('button',{cls:'small',onclick:()=>copyText(cm.cmd,b,'命令')},'复制命令');
+      c.append(el('div',{cls:'row-actions'}, b,
+        el('span',{cls:'hint'},'输出目录: '+esc(cm.work_dir||''))));
+    }
+  });
+  c.append(el('div',{cls:'hint',style:'margin-top:12px'},
+    '命令由 agentx_runner.build_cmd 按当前页面服务配置实时构建; local: 变体需先生成语料（tools/curate_weka_traces.py）; 输出目录时间戳为实际运行时创建的目录'));
+  card.append(c);
 }
 async function loadAgentXReport(){
   const card=$('#agentx-report-card'); if(!card) return;

@@ -27,3 +27,6 @@ web_state.json
 .idea/
 .vscode/
 *.swp
+
+# AgentX/HF 本地缓存
+.cache/
