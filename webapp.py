@@ -1692,6 +1692,12 @@ def _swe_validate_run_payload(payload, total):
         limit, e = _int("limit", 1, total)
         if e:
             return None, e
+        # 防呆: run_all_batches.sh 的循环条件是 off=START_OFFSET; off<TOTAL,
+        # start_offset >= limit 时一个批次都不执行、秒退报 all done（真实踩坑）
+        if off is not None and limit is not None and off >= limit:
+            return None, ("start_offset(%d) 必须 < limit(%d)——limit 是数据集总实例数"
+                          "(TOTAL, 默认 642), 不是批数; start_offset >= limit 时驱动"
+                          "一个批次都不会执行" % (off, limit))
         keep = payload.get("keep_images")
         if keep not in (None, True, False):
             return None, "keep_images 必须是布尔: %r" % (keep,)

@@ -1752,7 +1752,7 @@ async function openSweRunDialog(){
   const fOffset=field('起始偏移 (START_OFFSET)','swe_start_offset',so,'断点续跑默认值，0-'+((cfg.total_instances||642)-1),'number');
   const fWindow=field('每批实例数 (WINDOW)','swe_window',win,'1-64，默认 '+(def.window||32),'number');
   const fConc=field('批内并发 (CONCURRENCY)','swe_concurrency',conc,'1-32，默认 '+(def.concurrency||16),'number');
-  const fLimit=field('总条数上限 (TOTAL)','swe_limit',lim,'留空=全部 642；冒烟用','number');
+  const fLimit=field('总条数上限 (TOTAL)','swe_limit',lim,'数据集总实例数（不是批数！）；留空=全部 642；断点续跑请留空','number');
   grid.append(fOffset, fWindow, fConc, fLimit);
   body.append(grid);
   const keepF=el('div',{cls:'field'});
@@ -1784,6 +1784,11 @@ async function runSWEFromDialog(){
     const cb=$('#cfg-swe_concurrency').value; if(cb) body.concurrency=+cb;
     const lim=$('#cfg-swe_limit').value; if(lim) body.limit=+lim;
     const keep=$('#swe-keep-images'); if(keep&&keep.checked) body.keep_images=true;
+    /* 防呆: start_offset >= limit 时驱动循环一次都不执行、秒退报 all done（真实踩坑） */
+    if(body.limit!=null && body.start_offset>=body.limit){
+      toast('参数错误：起始偏移 '+body.start_offset+' ≥ 总条数上限 '+body.limit+'，驱动会一个批次都不跑。总条数上限=数据集总实例数（默认 642），不是批数；断点续跑请留空');
+      return;
+    }
   }else{
     const cb=$('#cfg-swe_concurrency').value; if(cb) body.concurrency=+cb;
   }
