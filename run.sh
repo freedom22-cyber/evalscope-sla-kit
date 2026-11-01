@@ -18,6 +18,9 @@
 #   bash run.sh --functional -f     # 前台跑功能检查
 #   bash run.sh --bfcl              # 后台跑 BFCL 函数调用评测（bfcl_runner.py, 日志 bfcl_*.log）
 #   bash run.sh --bfcl -f           # 前台跑 BFCL
+#   bash run.sh --swe <子命令>       # SWE-bench_Pro 线（swe_runner.py, 透传子命令:
+#                                    #   status / aggregate / rerun-list / env-check /
+#                                    #   start-rerun, 均为前台只读或带护栏的补跑入口）
 # ============================================================================
 set -u
 cd "$(dirname "$0")"
@@ -33,6 +36,8 @@ case "${1:-}" in
   --agentx)     shift; RUNNER="agentx_runner.py"; PREFIX="agentx" ;;
   --functional) shift; RUNNER="scripts/run_api_e2e.py"; PREFIX="func" ;;
   --bfcl)       shift; RUNNER="bfcl_runner.py"; PREFIX="bfcl" ;;
+  # SWE 线: 子命令都是快速只读操作/带双驱动护栏, 一律前台直跑（同 --report）
+  --swe)        shift; exec "$PY" swe_runner.py "$@" ;;
   *)            ;;
 esac
 

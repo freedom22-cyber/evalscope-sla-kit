@@ -3,7 +3,7 @@
 对 OpenAI 兼容推理服务（vLLM / MindIE / 路由网关等）做 **evalscope 摸高测试**：
 `--sla-auto-tune` 二分搜索满足 SLA 判据（TTFT / TPOT）的**最大并发数**。
 
-四条测试线，共用一份 `config.yaml`，统一通过 Web 控制台或命令行驱动：
+六条测试线，共用一份 `config.yaml`，统一通过 Web 控制台或命令行驱动：
 
 | 测试线 | 入口 | 产出 |
 |---|---|---|
@@ -12,6 +12,7 @@
 | 功能（API E2E） | `bash run.sh --functional` | `results/functional/e2e_<时间戳>/report.md` + 各用例响应原文 |
 | 智能体回放（AgentX） | `bash run.sh --agentx` | `results/agentx/<tag>_<时间戳>/…`（summary/metrics json + 关键指标打印） |
 | 函数调用（BFCL v4） | `bash run.sh --bfcl` | `results/bfcl/<tag>[_limit<N>]/reports/…/bfcl_v4.json` + `results/bfcl/scores.md` |
+| 智能体代码（SWE-bench_Pro） | `bash run.sh --swe status` | live 产物在 `swe_pro` 工作区（`swe_runner.py` 只读监控/聚合/补跑，见 SWE 章节） |
 
 ## 目录结构
 
@@ -24,11 +25,13 @@ evalscope_sla_kit/
 ├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + pass@k/mean 分数解析汇总
 ├── agentx_runner.py    # AgentX: 智能体回放（cc-traces 公共语料 / local:<目录> 本地裁剪语料）
 ├── bfcl_runner.py      # BFCL: 函数调用评测（22 子集, evalscope bfcl_v4 适配器, 独立 bfcl-venv）
+├── swe_runner.py       # SWE-bench_Pro: 只读监控/聚合/补跑（评测本体是 swe_pro 工作区的分批驱动）
 ├── scripts/run_api_e2e.py  # 功能测试: API E2E 框架（50 条用例 C01-C61 单一编号, 全非流式, PASS/WARN/FAIL/SKIP）
+├── scripts/swe/        # swe_pro 驱动脚本的归档副本（只存档不执行, live 跑的是原件）
 ├── report.py           # 摸高结果汇总（并发-指标表，可折算单卡吞吐）
 ├── webapp.py           # Web 控制台后端（FastAPI，端口 8300）
 ├── web/index.html      # Web 控制台前端（五页签单页应用，深色玻璃拟态）
-├── tools/              # gsm8k 数据集生成 / jsonl→prompts / weka 裁剪 / 守护脚本
+├── tools/              # gsm8k 数据集生成 / jsonl→prompts / weka 裁剪 / 守护脚本 / BFCL 入口 / SWE 工具副本
 ├── datasets/           # 生成的数据集（按文件名复用；weka 本地语料也放这里）
 ├── results/            # 摸高 + 精度 + 功能 + AgentX + BFCL 输出
 └── logs/               # 运行日志
@@ -79,6 +82,11 @@ python3 webapp.py --port 8300     # 浏览器打开 http://<主机IP>:8300
 ### 7. BFCL 函数调用
 - 子集勾选（按 6 大类分组，web_search / memory 默认不勾）+ 运行参数
 - 运行 / 停止（`killpg` 杀进程树），报告渲染 `results/bfcl/scores.md`（acc 表 + Overall）
+
+### 8. SWE-bench_Pro
+- **只读监控**（60s 轮询）：状态卡（当前批 / 进度条+ETA / 崩溃标记 / 进程活性 / binfmt / 磁盘）
+- 聚合表（repo × resolved/total/acc）、批次时间线（batches.log 尾部）、补跑队列卡
+- **没有运行/停止按钮**：启动与补跑一律走 CLI（`start-rerun` 有双驱动硬护栏），防止 web 误启动撞上正在跑的评测
 
 ## 快速开始
 
@@ -513,6 +521,176 @@ docker exec ais-bench /mnt/sfs_turbo/c00803992/bfcl-venv/bin/pip install \
   说明端点**原生函数调用可用**，`is_fc_model: true` 保持即可。
 - 多轮/智能体子集（multi_turn、web_search、memory）会真实执行模型给出的
   工具调用（含 shell 命令），全量跑前确认容器环境可承受。
+
+## SWE-bench_Pro 智能体代码评测（swe_runner.py）
+
+用 evalscope 的 `swe_bench_pro` 适配器跑 ModelScope **ScaleAI/SWE-bench_Pro**
+（数据集实际 **642 实例**，官方文档写 731）：模型对真实仓库 issue 生成补丁，
+每个实例在**独立 amd64 沙箱镜像**里跑金标测试，产出 resolved 率。测的是
+智能体式代码能力（长上下文 + 补丁 + 跑测试），不是 API SLA。
+
+与其他线最大的不同：**评测本体不在本仓库**。分批驱动、看守脚本住在 live
+工作区 `/mnt/sfs_turbo/c00803992/swe_pro`，因为 642 实例 × 每实例独立镜像
+（jefzda/sweap-images，无共享层，全量约 1.3TB 磁盘）必须 32 一批滚动
+"拉镜像 → 评 → prune"，由常驻宿主侧驱动负责。`swe_runner.py` 是只读
+监控 + 带双驱动护栏的补跑入口——**防的是 web/CLI 一键启动撞上正在跑的
+评测**：两个 evalscope 同时写 review 文件会互相覆盖。web 启停按钮经
+宿主桥接守护（`tools/swe_web_bridge.py`）驱动 live 原件，护栏同源
+（见「Web 启停与参数」）。
+
+> **live 评测产物（results / logs / reviews / 驱动脚本本体）都在
+> `/mnt/sfs_turbo/c00803992/swe_pro`，勿移动/修改/删除**——宿主侧常驻
+> 驱动与看守进程正在读它们。仓库里 `scripts/swe/`、`tools/` 下的同名
+> 脚本是归档副本（`scripts/swe/` 头部有标注），swe_runner 与全量驱动
+> 一律用 live 原件。
+
+### 架构（aarch64 宿主上跑 amd64 评测）
+
+```
+宿主（aarch64, 320 核）
+├── run_all_batches.sh            # 分批驱动（常驻）: 每批 32 实例循环
+│     └── run_swe_bench_pro.sh    # 单批: evalscope eval + 评分 + review 快照 + eval_rc 记录
+│           └── evalscope eval（跑在 ais-bench 容器里, /tmp/bench-venv）
+│                 └── 每实例独立 amd64 沙箱容器（~2GB/个, 评完 prune）
+│                       └── qemu-x86_64（宿主 binfmt_misc 注册, 容器内不可见）
+├── docker_unix_relay.py          # 容器 → 宿主 docker API 中继
+│     （unix socket 经 NFS 共享: /mnt/sfs_turbo/c00803992/dockersock/… ）
+├── staged_watch.sh               # 逐实例日志分段看守（进度行的来源）
+└── review_guard.sh               # review 文件实时备份看守（防事务性丢失）
+```
+
+- 容器里没有 `/var/run/docker.sock`：docker API 走 unix socket 中继。
+  **必须 unix relay**——TCP 代理会弄丢 docker-py hijack 之后的响应字节。
+- amd64 镜像在 aarch64 上靠 binfmt + qemu 跑；binfmt flags 必须是 `OCF`
+  （`POCF` 会让 docker 拉镜像阶段直接失败）。宿主注册，容器内
+  `/proc/sys/fs/binfmt_misc` 是空的，所以容器口径的 status 看不到它。
+- 容器内 `/tmp/bench-venv` 的 evalscope 1.14.1 有**两个必须打的适配器补丁**
+  （**容器重建即失效**，用仓库副本重打：`bash tools/prepare_swe_bench_env.sh`）：
+
+  | 补丁脚本 | 修什么 | 文件内 marker |
+  |---|---|---|
+  | `tools/patch_swe_bench_pro_tests.py` | 金标 test_patch 不进沙箱 → 测试空过、全 resolved | `# swe-bench-pro-testpatch` |
+  | `tools/patch_evalscope_instance_filter.py` | 适配器忽略 INSTANCE_FILE → 补跑跑成全量 | `# evalscope-instance-filter` |
+
+  `swe_runner.py env-check` 会 grep 这两个 marker 验证补丁在不在。
+- 补丁脚本对 venv 内目标文件用"临时文件 + `os.replace`"原子写，中断不留半个文件。
+- 评测进程在容器、驱动在宿主 → PID namespace 互相隔离。`status` 是**双口径**：
+  宿主机跑看全量；webapp（容器内）自动切容器口径，宿主侧进程标"不可见"。
+
+### 用法
+
+```bash
+bash run.sh --swe status              # 状态: 当前批/进度行/ETA/进程活性/磁盘/崩溃标记
+bash run.sh --swe status --json       # 同上 JSON（web 端点即此输出）
+bash run.sh --swe aggregate           # 已评分聚合: repo × resolved/total/acc
+bash run.sh --swe rerun-list          # 补跑队列: 条数 + 分组原因 + 样例
+bash run.sh --swe env-check           # 环境自检 7 项（relay/binfmt/venv 补丁/驱动脚本）
+bash run.sh --swe start-rerun         # 补跑 dry-run: 只打印 docker exec 命令
+bash run.sh --swe start-rerun --yes   # 真正启动（容器内在跑 evalscope → 拒绝, exit 3）
+```
+
+补跑原理：`EVALSCOPE_INSTANCE_FILE`（实例清单）+ `EVALSCOPE_DATASET_OFFSET=0`
++ `--limit` 大于清单条数；聚合器按 instance_id **去重取最后一条**，所以补跑
+只覆盖清单内实例、不碰已 resolved 的历史批。清单自动均分串行执行（`;` 连接，
+绝不起两个并行 evalscope）。
+
+### config.yaml swe 段
+
+```yaml
+swe:
+  work_dir: /mnt/sfs_turbo/c00803992/swe_pro    # live 工作区（驱动/reviews/logs 都在这）
+  results_dir: <work_dir>/results/accuracy/swe_bench_pro_dsv4   # 缺省由 work_dir 推导
+  rerun_ids:   <work_dir>/rerun_ids.txt
+  repo_path: /mnt/sfs_turbo/c00803992/evalscope-sla-kit        # 驱动调用仓库内工具用
+  api_url: http://192.168.0.9:18020/v1/chat/completions
+  model: dsv4
+  venv: /tmp/bench-venv              # 容器内 evalscope venv（补丁所在）
+  container: ais-bench
+  relay_socket: /mnt/sfs_turbo/c00803992/dockersock/docker.sock
+  disk_mount: /mnt/docker            # 磁盘余量看这个挂载点
+  batch_window: 32                   # 每批实例数（受磁盘滚动 prune 约束）
+  total_instances: 642
+  eval_batch_size: 16
+```
+
+`api_url` / `model` **故意不回退 `service` 段**：live 评测打的是 dsv4 端点，
+而 `service` 段当前是 glm5.3，回退会把补跑指向错误端点。换被测模型时
+两处都要显式改。
+
+### 已知坑（qemu / review 事务性 / 长尾）
+
+1. **qemu CPU 直通 OOM**：沙箱里看到宿主全部 320 核 → 每实例独立跑
+   ansible（pytest-xdist `-n auto`）/ jest（`--maxWorkers` 默认=核数）/
+   go build 全部 OOM。三个补丁钳死并发：
+   `patch_swe_bench_pro_workers.py`（xdist `-n 4`）、
+   `patch_swe_bench_pro_jest.py`（`--maxWorkers=2 --testTimeout=30000`）、
+   `patch_swe_bench_pro_go.py`（`GOMAXPROCS=2`）。
+2. **go 模块拉取**：默认代理在容器网络里不通，必须
+   `GOPROXY=https://goproxy.cn,direct`（已打进 go 补丁）。
+3. **长尾**：单批 32 实例里 1-2 个实例 20+ 分钟是常态（大仓库编译+全量
+   测试），进度条 ~600s/it、整批 4 小时量级，别误判为卡死。
+4. **review 事务性丢失**：evalscope 正常结束才 `os.replace(temp, base)`——
+   正常结束会**覆盖上一批**的 review；异常退出则 temp 连同当批全部评分被丢弃。
+   防护三件套：`run_swe_bench_pro.sh` 评后快照 + `eval_rc.log` 崩溃记录 +
+   `review_guard.sh` 实时备份；全丢了还能
+   `tools/recover_reviews_from_workspaces.py` 从 workspace 重建。
+5. **eval_rc.log 缺失≠异常**：崩溃记录是后加进驱动的，老批次跑完时文件
+   还不存在属正常（status 会注明）。
+6. **进度行两种形态**：原始 tqdm `\r` 刷新行（两个 `|`）和 INFO 日志行
+   （一个 `|`、带时间戳），解析必须两种都吃（见
+   `swe_runner.parse_progress_line`，单测里两个形态都有 fixture）。
+
+### Web 页签
+
+「SWE-bench_Pro」页签：状态卡 / 聚合表 / 批次时间线 / 补跑队列 +
+**运行控制卡**（启动/停止，见下节）。聚合和状态在容器内以 subprocess 派发
+`swe_runner.py`，与 CLI 同一份代码；运行中的页签 20s 轮询，静止 60s。
+
+### Web 启停与参数
+
+webapp 跑在 ais-bench 容器里（无 docker CLI、看不到宿主进程），启停指令
+走**命令文件 + 宿主桥接守护**落地：
+
+```
+web 前端 → webapp 容器内 API          宿主机（tools/swe_web_bridge.py，常驻轮询 1s）
+  POST /api/swe/run  → 写 swe_pro/webctl/run.json ─→ 校验护栏 → 拉起 run_all_batches.sh
+  POST /api/swe/stop → 写 swe_pro/webctl/stop      ─→ 全停序列（见下）
+  GET  /api/swe/status ← 读 webctl/state.json      ← 桥接每 3s 刷新（driver/eval 活性、
+                                                       当前批、最近动作）
+```
+
+`/mnt/sfs_turbo/c00803992` 是 NFS 共享盘，容器与宿主双向立即可见；桥接
+由 `bash scripts/start_web.sh` 幂等拉起（`setsid nohup`，日志
+`logs/swe_web_bridge.log`），也可手动 `python3 tools/swe_web_bridge.py`。
+
+- **桥接在线判定**：state.json 的 `updated_at` 距今 < 5s。离线时 run/stop
+  接口返回 503 并提示启动命令，前端按钮置灰 + 红字提示。
+- **双驱动护栏**：宿主侧 run_all_batches 在跑、或容器内 evalscope eval 在
+  跑 → run 命令被拒绝（错误写回 state.json，前端 toast 展示）。pgrep
+  模式串都用 `[x]` 括号技巧防自身误匹配。
+- **启动模式**：`full` = 断点续跑全量（detach 派发 run_all_batches.sh，
+  env 带 START_OFFSET/WINDOW/CONCURRENCY/KEEP_IMAGES）；`rerun` = 补跑
+  队列（`swe_runner.py start-rerun --yes`）。两种模式都会把
+  staged_watch / review_guard 看守幂等拉起。
+- **启动表单默认 start_offset**：后端 `GET /api/swe/config` 算
+  `default_start_offset`——batches.log 里最后**无 finished 配对**的批 →
+  续跑该批；全部配对 → 下一偏移；`all batches done` → 封顶 642。
+- **参数**：mode / start_offset（0-641）/ window（1-64，默认 32）/
+  concurrency（1-32，默认 16）/ keep_images / limit；`POST /api/swe/config`
+  只存 `web_state.json`（同 accuracy 线口径），**不改 config.yaml**。
+- **停止语义**（点击后确认框明示）：宿主驱动 + 容器内 evalscope/看守
+  一律 `kill -9`——**SIGTERM 会触发 evalscope 的 discard_review_reruns
+  把已评分行丢掉**；清掉 `sandbox-*` 沙箱容器（白名单 dsv41-mmc /
+  aiserver-agent / ais-bench 永不动）；再做数据抢救（recover from
+  workspaces + 比对 reviews 已评 instance_id + datasets arrow 找出
+  中断批未评分集，去重追加进 `rerun_ids.txt`）。已评分数据保留并自动
+  入补跑队列；无事在跑时停止是纯空操作。
+- 命令文件消费后即删（uuid 防串扰），所有写盘走"临时文件 + os.replace"
+  原子替换；桥接单实例自锁（发现第二个自身进程即退出）。
+
+**离线单测**（`python3 tests/test_swe.py`，不真启评测、mock 进程）覆盖：
+run 参数校验、命令文件写入、state.json 解析、断点默认值计算、sandbox
+容器过滤白名单、补跑清单去重追加。
 
 ## config.yaml 说明
 

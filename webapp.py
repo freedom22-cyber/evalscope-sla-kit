@@ -1495,6 +1495,326 @@ def api_bfcl_report():
     return {"ok": True, "report": text, "path": path}
 
 
+# ----------------------------------------------------- SWE-bench_Pro 评测 -------
+# 监控线（第七条线）: 全量评测由 /mnt/sfs_turbo/c00803992/swe_pro 的分批驱动
+# 负责。web 启停走「宿主机桥接守护」tools/swe_web_bridge.py：本 webapp 跑在
+# ais-bench 容器内（无 docker CLI、看不到宿主驱动进程），启停命令写到共享盘
+# swe_pro/webctl/ 下的命令文件（run.json / stop），宿主桥接轮询执行；状态经
+# webctl/state.json 回读。桥接侧有双驱动护栏（evalscope eval / run_all_batches
+# 在跑即拒绝）。补跑也可走 CLI: python3 swe_runner.py start-rerun。
+# 端点转调 swe_runner.py 子命令或直读 live 日志（NFS 共享盘, 容器内可读）。
+# 注意 status 在容器命名空间内探测: 宿主侧进程（驱动/review_guard/relay 进程）
+# 与 binfmt/磁盘会报 running=None（"不可见"）, 属预期。
+
+_BRIDGE_OFFLINE_HINT = ("宿主机桥接未运行，执行 bash scripts/start_web.sh 或手动拉起: "
+                        "setsid nohup python3 tools/swe_web_bridge.py "
+                        ">> logs/swe_web_bridge.log 2>&1 &")
+
+
+def _swe_sw():
+    import swe_runner
+    cfg, _ = effective_config()
+    return swe_runner.resolve_swe_config(cfg)
+
+
+def _swe_webctl(sw):
+    return os.path.join(sw["work_dir"], "webctl")
+
+
+def _atomic_write_json(path, data):
+    """tmp + os.replace 原子写 JSON（webctl 在 NFS 共享盘，两侧可见）。"""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".webctl_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_touch(path):
+    """原子创建空标志文件（stop 命令）。"""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".webctl_", suffix=".tmp")
+    os.close(fd)
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _swe_read_bridge_state(sw):
+    """读宿主桥接的 state.json: (state|None, online, age_s|None)。
+
+    在线判据用内容里的 updated_at_ts（epoch 秒）距今 < 5s——宿主(CST)与
+    容器(UTC)时区不同，本地时间字符串不可跨侧比较；epoch 一致（NTP 同步
+    已实测）。NFS 的 stat 属性缓存不可靠（acdirmax 可达 60s），每次
+    open() 读内容会 revalidate。老 state 文件没有 epoch 字段时回退解析
+    本地时间（同侧桥接未升级的过渡期，判为离线属可接受）。
+    """
+    p = os.path.join(_swe_webctl(sw), "state.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None, False, None
+    if not isinstance(data, dict):
+        return None, False, None
+    age = None
+    ts = data.get("updated_at_ts")
+    if isinstance(ts, (int, float)):
+        age = time.time() - float(ts)
+    else:
+        up = data.get("updated_at")
+        if up:
+            try:
+                age = time.time() - time.mktime(time.strptime(str(up),
+                                                              "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                age = None
+    online = age is not None and 0 <= age < 5
+    return data, online, (round(age, 1) if age is not None else None)
+
+
+def _swe_validate_run_payload(payload, total):
+    """启动参数校验: offset 0..total-1、window 1-64、concurrency 1-32、
+    mode ∈ full|rerun。返回 (params|None, error|None)。"""
+    mode = payload.get("mode") or "full"
+    if mode not in ("full", "rerun"):
+        return None, "mode 必须是 full 或 rerun: %r" % (mode,)
+
+    def _int(key, lo, hi):
+        v = payload.get(key)
+        if v in (None, ""):
+            return None, None
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return None, "%s 必须是整数: %r" % (key, v)
+        if not lo <= v <= hi:
+            return None, "%s 超出范围 [%d, %d]: %d" % (key, lo, hi, v)
+        return v, None
+
+    params = {"mode": mode}
+    if mode == "full":
+        off, e = _int("start_offset", 0, max(total - 1, 0))
+        if e:
+            return None, e
+        win, e = _int("window", 1, 64)
+        if e:
+            return None, e
+        conc, e = _int("concurrency", 1, 32)
+        if e:
+            return None, e
+        limit, e = _int("limit", 1, total)
+        if e:
+            return None, e
+        keep = payload.get("keep_images")
+        if keep not in (None, True, False):
+            return None, "keep_images 必须是布尔: %r" % (keep,)
+        ifn = payload.get("instance_file")
+        if ifn not in (None, ""):
+            if not isinstance(ifn, str) or "\n" in ifn:
+                return None, "instance_file 必须是路径字符串"
+        params.update(start_offset=off if off is not None else 0,
+                      window=win, concurrency=conc, limit=limit,
+                      keep_images=bool(keep), instance_file=ifn or None)
+    else:
+        conc, e = _int("concurrency", 1, 32)
+        if e:
+            return None, e
+        params.update(concurrency=conc)
+    return params, None
+
+
+def _swe_fill_defaults(params, sw):
+    """空参数补 config swe 段默认值（window= batch_window, concurrency=
+    eval_batch_size），返回补全后的 params。"""
+    p = dict(params)
+    if p.get("window") is None:
+        p["window"] = int(sw.get("batch_window") or 32)
+    if p.get("concurrency") is None:
+        p["concurrency"] = int(sw.get("eval_batch_size") or 16)
+    return p
+
+
+@app.get("/api/swe/status")
+def api_swe_status():
+    """转调 swe_runner.py status --json; 并入宿主桥接 state（web 启停口径）。"""
+    cmd = ["python3", os.path.join(KIT_ROOT, "swe_runner.py"), "status", "--json"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                           cwd=KIT_ROOT)
+        data = json.loads(r.stdout or "{}")
+        if not isinstance(data, dict) or "ok" not in data:
+            return {"ok": False, "error": "swe_runner 输出异常",
+                    "raw": (r.stdout or "")[-400:]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    # 增量并入桥接状态（不改动 swe_runner 原有键）: 在线与否 + 驱动/eval
+    # 存活 + 最近动作（run/stop 结果都在里面）
+    try:
+        sw = _swe_sw()
+        bstate, online, age = _swe_read_bridge_state(sw)
+        data["bridge"] = {"online": online, "state_age_s": age,
+                          "state": bstate}
+    except Exception as e:
+        data["bridge"] = {"online": False, "error": str(e)}
+    return data
+
+
+@app.get("/api/swe/config")
+def api_swe_config():
+    """SWE 运行配置: config.yaml swe 段 + 上次 web 运行参数（web_state）+
+    断点续跑默认 start_offset + 桥接在线状态。"""
+    import swe_runner
+    cfg, st = effective_config()
+    sw = swe_runner.resolve_swe_config(cfg)
+    total = int(sw.get("total_instances") or 642)
+    resume = swe_runner.compute_resume_offset(sw)
+    saved = st.get("swe_run_params") or {}
+    state, online, age = _swe_read_bridge_state(sw)
+    return {
+        "ok": True,
+        "work_dir": sw["work_dir"],
+        "model": sw.get("model"),
+        "api_url": sw.get("api_url"),
+        "container": sw.get("container"),
+        "total_instances": total,
+        "defaults": {
+            "mode": "full",
+            "start_offset": resume["offset"],
+            "window": int(sw.get("batch_window") or 32),
+            "concurrency": int(sw.get("eval_batch_size") or 16),
+            "keep_images": False,
+            "limit": None,
+        },
+        "default_start_offset": resume["offset"],
+        "resume": resume,
+        "saved_params": saved,
+        "rerun_queue_count": swe_runner.parse_rerun_ids(sw["rerun_ids"])["count"],
+        "bridge": {"online": online, "state_age_s": age},
+    }
+
+
+@app.post("/api/swe/config")
+def api_swe_set_config(payload: dict = Body(...)):
+    """保存 SWE 运行参数到 web_state.json swe_run_params（不写 config.yaml，
+    与 /api/accuracy/config 同模式）。"""
+    import swe_runner
+    cfg, _ = effective_config()
+    sw = swe_runner.resolve_swe_config(cfg)
+    params, err = _swe_validate_run_payload(
+        payload, int(sw.get("total_instances") or 642))
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    params = _swe_fill_defaults(params, sw)
+
+    def _mutate(st):
+        st["swe_run_params"] = params
+        return {"ok": True, "params": params}
+    return update_state(_mutate)
+
+
+@app.post("/api/swe/run")
+def api_swe_run(payload: dict = Body(default={})):
+    """启动 SWE 评测: 校验参数 → 写 webctl/run.json（带 uuid 防重放）→
+    宿主桥接执行（桥接侧还有权威双驱动护栏）。"""
+    import swe_runner
+    cfg, _ = effective_config()
+    sw = swe_runner.resolve_swe_config(cfg)
+    params, err = _swe_validate_run_payload(
+        payload, int(sw.get("total_instances") or 642))
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    params = _swe_fill_defaults(params, sw)
+    state, online, _age = _swe_read_bridge_state(sw)
+    if not online:
+        return JSONResponse({"ok": False, "error": _BRIDGE_OFFLINE_HINT},
+                            status_code=503)
+    # 桥接状态显示在跑 → 提前拒绝（桥接侧仍会再查一次护栏）
+    if state and (state.get("driver_running") or state.get("eval_running")):
+        return JSONResponse({"ok": False, "error": "评测正在运行中（先停止再启动）"},
+                            status_code=409)
+    cmd = {"uuid": uuid.uuid4().hex, "ts": _now()}
+    cmd.update(params)
+    _atomic_write_json(os.path.join(_swe_webctl(sw), "run.json"), cmd)
+    # 记住本次参数作为页面下次默认值（web_state, 不碰 config.yaml）
+    def _mutate(st):
+        st["swe_run_params"] = params
+        return None
+    update_state(_mutate)
+    return {"ok": True, "accepted": True, "bridge_online": True,
+            "mode": params["mode"], "params": params}
+
+
+@app.post("/api/swe/stop")
+def api_swe_stop():
+    """停止 SWE 评测: 写 webctl/stop 标志 → 宿主桥接执行完整停止序列
+    （SIGKILL 保数据 + 数据抢救 + 未评分实例入补跑队列）。"""
+    sw = _swe_sw()
+    state, online, _age = _swe_read_bridge_state(sw)
+    if not online:
+        return JSONResponse({"ok": False, "error": _BRIDGE_OFFLINE_HINT},
+                            status_code=503)
+    _atomic_touch(os.path.join(_swe_webctl(sw), "stop"))
+    return {"ok": True, "accepted": True, "bridge_online": True}
+
+
+@app.get("/api/swe/aggregate")
+def api_swe_aggregate():
+    """转调 swe_runner.py aggregate, 返回文本行（前端解析成 repo 表）。"""
+    cmd = ["python3", os.path.join(KIT_ROOT, "swe_runner.py"), "aggregate"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
+                           cwd=KIT_ROOT)
+        # 无 reviews 时 aggregate rc=1 且 stdout 是一行说明——按无结果而非异常
+        return {"ok": r.returncode == 0,
+                "lines": (r.stdout or "").splitlines(),
+                "error": (r.stderr or "").strip() or None}
+    except Exception as e:
+        return {"ok": False, "lines": [], "error": str(e)}
+
+
+@app.get("/api/swe/batches")
+def api_swe_batches():
+    """batches.log 尾部 20 行（批次时间线）。"""
+    import swe_runner
+    cfg, _ = effective_config()
+    sw = swe_runner.resolve_swe_config(cfg)
+    path = sw["batches_log"]
+    if not os.path.exists(path):
+        return {"ok": False, "lines": [], "error": f"日志不存在: {path}"}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        return {"ok": False, "lines": [], "error": str(e)}
+    return {"ok": True, "lines": lines[-20:], "path": path}
+
+
+@app.get("/api/swe/rerun")
+def api_swe_rerun():
+    """补跑清单: 条数 + 注释分组摘要 + 前 30 条样例。"""
+    import swe_runner
+    cfg, _ = effective_config()
+    sw = swe_runner.resolve_swe_config(cfg)
+    rr = swe_runner.parse_rerun_ids(sw["rerun_ids"], sample_n=30)
+    rr["ok"] = rr.pop("exists")
+    return rr
+
+
 # ----------------------------------------------------- 日志打包下载 -------
 @app.get("/api/projects/{pid}/pack")
 def api_project_pack(pid: str):
