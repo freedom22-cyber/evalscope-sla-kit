@@ -199,11 +199,46 @@ def test_build_cmd():
           and "--use-cache" not in joined2)
 
 
+# ---------------------------------------------------------------- web 日志 --
+def test_webapp_log_listing():
+    print("[web] /api/bfcl/status 日志清单（离线, 不发请求）")
+    import webapp
+    with tempfile.TemporaryDirectory() as td:
+        old = webapp.LOGS_DIR
+        webapp.LOGS_DIR = td
+        try:
+            # 评测日志 bfcl_20*.log; bfcl_venv_install.log 是安装日志应被排除
+            cases = {"bfcl_20300101_120000.log": 1000,
+                     "bfcl_20300101_130000.log": 3000,
+                     "bfcl_venv_install.log": 4000,
+                     "bfcl_20300101_110000.log": 500}
+            for name, ts in cases.items():
+                p = os.path.join(td, name)
+                with open(p, "wb") as f:
+                    f.write(b"x" * 100)
+                os.utime(p, (ts, ts))
+            logs = webapp._list_bfcl_logs()
+            check("安装日志被排除, 只列评测日志", len(logs) == 3
+                  and all(not l["path"].endswith("venv_install.log") for l in logs))
+            check("mtime 倒序（最新在前）",
+                  [os.path.basename(l["path"]) for l in logs] ==
+                  ["bfcl_20300101_130000.log", "bfcl_20300101_120000.log",
+                   "bfcl_20300101_110000.log"])
+            check("字段含 path/mtime/size",
+                  all(set(l) >= {"path", "mtime", "size"} for l in logs))
+            st = webapp.api_bfcl_status()
+            check("status 端点附带 logs（重启后 not_started 仍可见历史）",
+                  st.get("status") == "not_started" and st.get("logs") == logs)
+        finally:
+            webapp.LOGS_DIR = old
+
+
 def main():
     test_resolve_config()
     test_compute_aggregates()
     test_parse_report()
     test_build_cmd()
+    test_webapp_log_listing()
     print()
     if FAILS:
         print(f"FAILED: {len(FAILS)} 项: {FAILS}")

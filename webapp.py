@@ -1446,7 +1446,23 @@ _BFCL_PROC = None
 
 @app.get("/api/bfcl/status")
 def api_bfcl_status():
-    return dict(_BFCL_TASK) if _BFCL_TASK else {"status": "not_started"}
+    d = dict(_BFCL_TASK) if _BFCL_TASK else {"status": "not_started"}
+    # BFCL 状态是纯内存字典, webui 重启即归零; 附上磁盘日志清单保证历史仍可见
+    d["logs"] = _list_bfcl_logs()
+    return d
+
+
+def _list_bfcl_logs(limit: int = 8):
+    """logs/ 下 bfcl_20*.log（评测日志, 排除 venv 安装日志）按 mtime 倒序。"""
+    out = []
+    for p in glob.glob(os.path.join(LOGS_DIR, "bfcl_2*.log")):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        out.append({"path": p, "mtime": int(st.st_mtime), "size": st.st_size})
+    out.sort(key=lambda x: (x["mtime"], x["path"]), reverse=True)
+    return out[:limit]
 
 
 @app.get("/api/bfcl/config")
@@ -1535,8 +1551,11 @@ def _run_bfcl(cmd):
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
         try:
             logf.write(f"[bfcl] 命令: {' '.join(cmd)}\n")
+            # stdout 重定向到文件时子进程按 4KB 块缓冲, 日志要等几分钟才落盘;
+            # PYTHONUNBUFFERED 经 bfcl_runner → venv → evalscope 一路继承
             proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
-                                    cwd=KIT_ROOT, start_new_session=True)
+                                    cwd=KIT_ROOT, start_new_session=True,
+                                    env={**os.environ, "PYTHONUNBUFFERED": "1"})
             _BFCL_PROC = proc
             # Popen 之后发现已被请求停止：立即杀掉，避免幽灵进程
             if _BFCL_TASK.get("status") == "stopped":
