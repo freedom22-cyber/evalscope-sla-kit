@@ -92,7 +92,7 @@ DEFAULTS = {
 #     [Elapsed: 3:56:05 < Remaining: 20:46, 623.07s/it]
 _PROG_RE = re.compile(
     r"Evaluating\[swe_bench_pro\][:\s]*(\d+)%\|[^|\d]*\|?\s*(\d+)/(\d+)\s*\["
-    r"[^\]]*?(\d[\d:]+)\s*<\s*([^\],]+?),\s*([\d.]+)s/it\]")
+    r"[^\]]*?(\d[\d:]+)\s*<\s*([^\],]+?),\s*([\d.?]+)\s*(?:s/it|it/s)\]")
 _TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _BATCH_HDR_RE = re.compile(r"window=(\d+)\s+concurrency=(\d+)\s+total=(\d+)"
                            r"\s+start_offset=(-?\d+)")
@@ -228,41 +228,52 @@ def compute_resume_offset(sw: dict) -> dict:
 
 
 def parse_progress_line(line: str) -> dict:
-    """解析单条 tqdm 进度行（Evaluating[swe_bench_pro]）; 不匹配返回 None。"""
+    """解析单条 tqdm 进度行（Evaluating[swe_bench_pro]）; 不匹配返回 None。
+
+    尚无完成实例时 tqdm 的 rate 是 "?"（无 ETA 阶段）——返回字符串 "?" 而非
+    数值; CLI/web 端按原样展示。"""
     m = _PROG_RE.search(line)
     if not m:
         return None
     eta = m.group(5).replace("Remaining:", "").strip()
     ts = _TS_RE.search(line)
+    rate = m.group(6)
     return {"pct": int(m.group(1)), "n": int(m.group(2)),
             "total": int(m.group(3)), "elapsed": m.group(4), "eta": eta,
-            "rate": float(m.group(6)), "ts": ts.group(1) if ts else None}
+            "rate": rate if rate == "?" else float(rate),
+            "ts": ts.group(1) if ts else None}
 
 
-def find_progress(path: str, tail_bytes: int = 200000) -> dict:
-    """读 batch log 尾部, 找最后一条 Evaluating[swe_bench_pro] 进度行并解析。
+def find_progress(path: str, block: int = 1024 * 1024, overlap: int = 262144,
+                  cap: int = 8 * 1024 * 1024) -> dict:
+    """找日志里最后一条 Evaluating[swe_bench_pro] 进度行并解析。
 
     tqdm 用 \\r 就地刷新, evalscope 又把它转写进 INFO 日志行——两种都切开后
-    取最后一条。batch log 有 10MB+ 级, 只读尾部。
+    取最后一条。从文件末尾逐块向前扫（eval 实例输出会淹没较早的进度行——
+    rerun 日志里两条 tqdm 更新之间可隔数 MB 的 ms_enclave 输出, 固定小尾窗
+    会漏）; 单块找到即停, 最多回看 cap 字节。跨块边界行由 overlap 兜住。
     """
     if not path or not os.path.isfile(path):
         return None
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
-            if size > tail_bytes:
-                f.seek(size - tail_bytes)
-            data = f.read()
+            end, scanned = size, 0
+            while end > 0 and scanned < cap:
+                start = max(0, end - block - overlap)
+                f.seek(start)
+                text = f.read(end - start).decode("utf-8", errors="replace")
+                for chunk in reversed(re.split(r"[\r\n]", text)):
+                    if "Evaluating[swe_bench_pro]" not in chunk:
+                        continue
+                    prog = parse_progress_line(chunk)
+                    if prog:
+                        prog["log"] = path
+                        return prog
+                end -= block
+                scanned += block
     except OSError:
         return None
-    text = data.decode("utf-8", errors="replace")
-    for chunk in reversed(re.split(r"[\r\n]", text)):
-        if "Evaluating[swe_bench_pro]" not in chunk:
-            continue
-        prog = parse_progress_line(chunk)
-        if prog:
-            prog["log"] = path
-            return prog
     return None
 
 
@@ -278,6 +289,15 @@ def latest_batch_log(sw: dict, batches: dict) -> str:
     if not pats:
         return None
     return max(pats, key=lambda p: (os.path.getmtime(p), p))
+
+
+def latest_rerun_log(sw: dict) -> str:
+    """logs/rerun_part*.log 中 mtime 最新的一个; 无则 None。
+
+    rerun 模式没有 batch log——进度行/运行日志全在 rerun_part*.log。"""
+    pats = [p for p in glob.glob(os.path.join(sw["logs_dir"], "rerun_part*.log"))
+            if os.path.isfile(p)]
+    return max(pats, key=lambda p: (os.path.getmtime(p), p)) if pats else None
 
 
 def parse_eval_rc(path: str, tail_n: int = 8) -> dict:
@@ -507,6 +527,15 @@ def collect_status(sw: dict) -> dict:
     if progress and batches.get("current") is not None:
         progress["overall_n"] = batches["current"]["offset"] + progress["n"]
         progress["overall_total"] = batches.get("total")
+    # rerun 模式: 进度行/日志在 logs/rerun_part*.log（无 batch log）。
+    # 最新 rerun 日志 15 分钟内有写入、且比当前 batch log 新 = rerun 推进中,
+    # 进度改从它解析——否则状态页的"进度"行会一直挂着 stale 的 batch 进度。
+    rlog = latest_rerun_log(sw)
+    rerun_active = bool(
+        rlog and time.time() - os.path.getmtime(rlog) < 15 * 60
+        and (blog is None or os.path.getmtime(rlog) > os.path.getmtime(blog)))
+    if rerun_active:
+        progress = find_progress(rlog)
     eval_rc = parse_eval_rc(sw["eval_rc_log"])
     rerun = parse_rerun_ids(sw["rerun_ids"])
     rerun.pop("groups", None)   # 轻量: status 只带计数, 明细走 rerun-list
@@ -526,6 +555,8 @@ def collect_status(sw: dict) -> dict:
         "binfmt": binfmt_status(),
         "disk": disk_status(sw.get("disk_mount")),
         "rerun": rerun,
+        "rerun_log": rlog,
+        "rerun_active": rerun_active,
         "log_mtime": {
             "batches_log": _mtime_str(sw["batches_log"]),
             "current_batch_log": _mtime_str(blog) if blog else None,
@@ -630,6 +661,10 @@ def cmd_status(sw: dict, as_json: bool) -> int:
               f"  明细: python3 swe_runner.py rerun-list")
     else:
         print(f"补跑队列: 清单缺失 ({rr['file']})")
+    if st.get("rerun_log"):
+        print(f"rerun 日志: {st['rerun_log']}"
+              + ("（近 15 分钟有写入, 推进中; tail -f 看实时）" if st.get("rerun_active")
+                 else ""))
     if st["namespace"] == "container":
         print(f"注: 本进程在容器内, {HOST_ONLY_NOTE}")
     return 0

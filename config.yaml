@@ -17,8 +17,11 @@ service:
   # GET <url 去掉 /v1/chat/completions>/v1/models 可查；当前服务暴露 glm5.3
   model: glm5.3
   # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
-  # 对应权重 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx）
-  tokenizer_path: /home/hhc/model/GLM-5.3-w4a4c4-mxfp4-0902
+  # 被测权重在服务端是 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx），
+  # 该路径只存在于服务端；本机取同词表的 GLM-5.3-Flash-w8a8（tokenizer.json
+  # 与 GLM-5.2 字节数一致）作为本地 tokenizer。改路径前务必确认目录存在，
+  # runner 启动即校验，缺目录直接 FileNotFoundError。
+  tokenizer_path: /mnt/sfs_turbo/model/GLM-5.3-Flash-w8a8
   # 服务上下文上限（agentx 回放传 --max-context-length, 超长 trace 会先被过滤,
   # 避免打到服务端 400; 不设置则不传。glm5.3 端点 max_model_len=204800）
   max_context_length: 204800

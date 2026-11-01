@@ -1,0 +1,27 @@
+# ============================================================================
+# Mooncake 池对照配置 —— 只写与基座 config.dsv41.yaml 不同的字段
+# ----------------------------------------------------------------------------
+# 其余配置（服务地址/tokenizer/场景/SLA/数据集/请求参数）全部经 base_config
+# 继承基座; 本文件不再整份复制, 避免两份全量配置手工同步漂移——改了基座
+# 忘改副本, 会让两池跑不同场景或打到不同端点, 恰是池对照要防的口径污染。
+# 合并规则: dict 递归合并（子键逐个覆盖）, list/scalar 整体替换。
+#
+# 使用方法（注意: run.sh 默认读 config.yaml, 本文件必须显式 --config 指定）:
+#   bash run.sh --config config.dsv41.mooncake.yaml            # 顺序跑（nohup 后台）
+#   bash run.sh --config config.dsv41.mooncake.yaml --dry-run  # 只打印命令不执行
+#   python3 compare_pools.py                                    # 跑完对照两池
+#
+# 差异背景见 mooncake_vs_memcache_report.md: 第一轮按 memcake 同参数跑,
+# mooncake 池 put 慢（TRANSFER_FAIL 重试）, 三场景连 conc1 档都完不成;
+# 第二轮放大预算 + 精简 warmup, 让档位跑完出真实数字。
+# ============================================================================
+
+# 基座配置（相对本文件目录解析）
+base_config: config.dsv41.yaml
+
+benchmark:
+  # ---- 相对基座的全部差异只有以下 4 项, 其余 benchmark 字段继承基座 ----
+  sla_num_runs: 1        # 基线 2
+  warmup_num: 2          # 基线 10
+  time_budget_min: 100   # 基线 25: 第一轮（同 memcake 参数）连 conc1 档都完不成
+  warmup_budget_min: 6   # 基线 25: mooncake 池 put 慢, 冷 prefill 预热可拖数小时

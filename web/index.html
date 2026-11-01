@@ -1564,6 +1564,7 @@ async function renderBFCL(){
   m.append(runCard);
 
   m.append(el('div',{id:'bfcl-status-card'}));
+  m.append(el('div',{id:'bfcl-logs-card'}));
   m.append(el('div',{id:'bfcl-report-card'}));
   await refreshBFCLStatus();
 }
@@ -1607,8 +1608,37 @@ async function refreshBFCLStatus(){
   const rb=$('#bfcl-run-btn'), sb=$('#bfcl-stop-btn');
   if(rb) rb.disabled=running; if(sb) sb.disabled=!running;
   statusCard('bfcl-status-card', st, running);
+  renderBFCLLogs(st.logs);
   if(running){ pollStatus('bfcl', async()=>{ await refreshBFCLStatus(); await loadBFCLReport(); },6000); }
   else { await loadBFCLReport(); }
+}
+function fmtLogTime(ts){ const d=new Date(ts*1000), p=n=>String(n).padStart(2,'0');
+  return (d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); }
+function fmtSize(n){ return n>=1048576?(n/1048576).toFixed(1)+' MB':(n>=1024?Math.round(n/1024)+' KB':n+' B'); }
+function renderBFCLLogs(logs){
+  const card=$('#bfcl-logs-card'); if(!card) return;
+  card.innerHTML='';
+  const c=el('div',{cls:'card'});
+  c.append(el('h2',{}, iconEl('doc'), el('span',{},'评测日志'),
+    el('span',{cls:'hint'},'logs/bfcl_*.log · webui 重启后仍可查')));
+  if(!logs||!logs.length){
+    c.append(el('div',{cls:'hint',style:'margin-top:8px'},'还没有 BFCL 评测日志'));
+  }else{
+    const wrap=el('div',{style:'margin-top:8px;display:flex;flex-direction:column;gap:6px'});
+    logs.forEach(l=>{
+      const row=el('div',{style:'display:flex;align-items:center;gap:8px;flex-wrap:wrap'});
+      let html='<code style="font-size:12px">'+esc(l.path.split('/').pop())+'</code> ';
+      if(Date.now()/1000-l.mtime<120) html+='<span class="pill running">写入中</span> ';
+      row.innerHTML=html;
+      row.append(el('span',{cls:'hint'},fmtLogTime(l.mtime)+' · '+fmtSize(l.size)));
+      const b=el('button',{cls:'small'},'查看日志');
+      b.onclick=()=>showLog(l.path);
+      row.append(b);
+      wrap.append(row);
+    });
+    c.append(wrap);
+  }
+  card.append(c);
 }
 async function loadBFCLReport(){
   const r=await api('/api/bfcl/report');
@@ -1752,7 +1782,7 @@ async function openSweRunDialog(){
   const fOffset=field('起始偏移 (START_OFFSET)','swe_start_offset',so,'断点续跑默认值，0-'+((cfg.total_instances||642)-1),'number');
   const fWindow=field('每批实例数 (WINDOW)','swe_window',win,'1-64，默认 '+(def.window||32),'number');
   const fConc=field('批内并发 (CONCURRENCY)','swe_concurrency',conc,'1-32，默认 '+(def.concurrency||16),'number');
-  const fLimit=field('总条数上限 (TOTAL)','swe_limit',lim,'留空=全部 642；冒烟用','number');
+  const fLimit=field('总条数上限 (TOTAL)','swe_limit',lim,'数据集总实例数（不是批数！）；留空=全部 642；断点续跑请留空','number');
   grid.append(fOffset, fWindow, fConc, fLimit);
   body.append(grid);
   const keepF=el('div',{cls:'field'});
@@ -1784,6 +1814,11 @@ async function runSWEFromDialog(){
     const cb=$('#cfg-swe_concurrency').value; if(cb) body.concurrency=+cb;
     const lim=$('#cfg-swe_limit').value; if(lim) body.limit=+lim;
     const keep=$('#swe-keep-images'); if(keep&&keep.checked) body.keep_images=true;
+    /* 防呆: start_offset >= limit 时驱动循环一次都不执行、秒退报 all done（真实踩坑） */
+    if(body.limit!=null && body.start_offset>=body.limit){
+      toast('参数错误：起始偏移 '+body.start_offset+' ≥ 总条数上限 '+body.limit+'，驱动会一个批次都不跑。总条数上限=数据集总实例数（默认 642），不是批数；断点续跑请留空');
+      return;
+    }
   }else{
     const cb=$('#cfg-swe_concurrency').value; if(cb) body.concurrency=+cb;
   }
@@ -1868,6 +1903,16 @@ function buildSWEStatusCard(st){
   const rr=st.rerun||{};
   kv.append(el('div',{cls:'k'},'补跑队列'), el('div',{cls:'v'},
     (rr.count!=null?rr.count:'-')+' 条（见下方补跑队列卡）'));
+  /* rerun 模式: 进度行/日志在 rerun_part*.log, 不在这里看不到任何 rerun 痕迹 */
+  if(st.rerun_log){
+    const rl=el('div',{cls:'v'});
+    rl.innerHTML='<code>'+esc(st.rerun_log)+'</code> ';
+    if(st.rerun_active) rl.innerHTML+='<span class="pill running">写入中</span> ';
+    const b=el('button',{cls:'small'},'查看日志');
+    b.onclick=()=>showLog(st.rerun_log);
+    rl.append(b);
+    kv.append(el('div',{cls:'k'},'rerun 日志'), rl);
+  }
   c.append(kv);
   if(st.namespace==='container'){
     c.append(el('div',{cls:'hint',style:'margin-top:10px'},

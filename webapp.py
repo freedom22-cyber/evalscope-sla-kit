@@ -36,6 +36,7 @@ sys.path.insert(0, KIT_ROOT)
 
 import agentx_runner  # noqa: E402
 import runner  # noqa: E402
+import sla_paths  # noqa: E402  # "最新一轮结果"选择（mtime 口径）
 
 try:
     from fastapi import FastAPI, Body
@@ -191,10 +192,8 @@ def _task_key(project_id, case_id):
 def _result_of(case_id):
     """找用例最新 sla_summary.json 并解析成表。"""
     sc_dir = os.path.join(RESULTS_DIR, case_id)
-    summary = None
-    paths = sorted(glob.glob(os.path.join(sc_dir, "*", "*", "sla_summary.json")))
-    if paths:
-        summary = paths[-1]
+    # mtime 选最新（目录名时间戳混用宿主 CST / 容器 UTC 两个时钟）——口径见 sla_paths
+    summary = sla_paths.latest_summary_path(sc_dir)
     rows = []
     if summary:
         try:
@@ -807,7 +806,18 @@ def api_log(path: str, offset: int = 0, tail: int = 0):
     """
     ap = os.path.abspath(path)
     B = os.path.abspath(KIT_ROOT)
-    if not (ap == B or ap.startswith(B + os.sep)):
+    # SWE 日志目录在 kit 根之外（swe_pro/logs）: web 控制台的 SWE 状态卡
+    # 要能 showLog 查看 batch/rerun 运行日志, 只放行该日志目录本身
+    swe_logs = None
+    try:
+        import swe_runner
+        cfg0, _ = effective_config()
+        swe_logs = os.path.abspath(swe_runner.resolve_swe_config(cfg0)["logs_dir"])
+    except Exception:  # noqa: BLE001  # swe 配置不可用时只是少放行一个目录
+        pass
+    allowed = (ap == B or ap.startswith(B + os.sep)
+               or (swe_logs and (ap == swe_logs or ap.startswith(swe_logs + os.sep))))
+    if not allowed:
         return JSONResponse({"ok": False, "error": "路径越界"}, status_code=400)
     if not os.path.isfile(ap):
         return {"ok": False, "error": "文件不存在", "lines": [], "total": 0}
@@ -1436,7 +1446,23 @@ _BFCL_PROC = None
 
 @app.get("/api/bfcl/status")
 def api_bfcl_status():
-    return dict(_BFCL_TASK) if _BFCL_TASK else {"status": "not_started"}
+    d = dict(_BFCL_TASK) if _BFCL_TASK else {"status": "not_started"}
+    # BFCL 状态是纯内存字典, webui 重启即归零; 附上磁盘日志清单保证历史仍可见
+    d["logs"] = _list_bfcl_logs()
+    return d
+
+
+def _list_bfcl_logs(limit: int = 8):
+    """logs/ 下 bfcl_20*.log（评测日志, 排除 venv 安装日志）按 mtime 倒序。"""
+    out = []
+    for p in glob.glob(os.path.join(LOGS_DIR, "bfcl_2*.log")):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        out.append({"path": p, "mtime": int(st.st_mtime), "size": st.st_size})
+    out.sort(key=lambda x: (x["mtime"], x["path"]), reverse=True)
+    return out[:limit]
 
 
 @app.get("/api/bfcl/config")
@@ -1525,8 +1551,11 @@ def _run_bfcl(cmd):
     with open(log_path, "a", encoding="utf-8", buffering=1) as logf:
         try:
             logf.write(f"[bfcl] 命令: {' '.join(cmd)}\n")
+            # stdout 重定向到文件时子进程按 4KB 块缓冲, 日志要等几分钟才落盘;
+            # PYTHONUNBUFFERED 经 bfcl_runner → venv → evalscope 一路继承
             proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
-                                    cwd=KIT_ROOT, start_new_session=True)
+                                    cwd=KIT_ROOT, start_new_session=True,
+                                    env={**os.environ, "PYTHONUNBUFFERED": "1"})
             _BFCL_PROC = proc
             # Popen 之后发现已被请求停止：立即杀掉，避免幽灵进程
             if _BFCL_TASK.get("status") == "stopped":
@@ -1693,6 +1722,12 @@ def _swe_validate_run_payload(payload, total):
         limit, e = _int("limit", 1, total)
         if e:
             return None, e
+        # 防呆: run_all_batches.sh 的循环条件是 off=START_OFFSET; off<TOTAL,
+        # start_offset >= limit 时一个批次都不执行、秒退报 all done（真实踩坑）
+        if off is not None and limit is not None and off >= limit:
+            return None, ("start_offset(%d) 必须 < limit(%d)——limit 是数据集总实例数"
+                          "(TOTAL, 默认 642), 不是批数; start_offset >= limit 时驱动"
+                          "一个批次都不会执行" % (off, limit))
         keep = payload.get("keep_images")
         if keep not in (None, True, False):
             return None, "keep_images 必须是布尔: %r" % (keep,)

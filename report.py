@@ -24,6 +24,8 @@ KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(KIT_ROOT, "results")
 sys.path.insert(0, KIT_ROOT)
 
+from sla_paths import latest_summary_path  # noqa: E402  # "最新一轮"选择（mtime 口径）
+
 # SLA 判据表 {场景ID: (ttft_sla_ms, tpot_sla_ms)}，从 config.yaml 场景行解析;
 # config 缺失/不可用时 SLA_MAP 为空，报告优雅降级（不打印判定列）。
 # 兜底 SystemExit: runner.py 缺 pyyaml 时 import 阶段就会 sys.exit
@@ -59,9 +61,8 @@ K_IN_TPS = "Input Throughput (tok/s)"
 
 
 def find_latest_summary(scenario_dir: str):
-    """找场景目录下最新时间戳的 sla_summary.json"""
-    paths = sorted(glob.glob(os.path.join(scenario_dir, "*", "*", "sla_summary.json")))
-    return paths[-1] if paths else None
+    """找场景目录下最新时间戳的 sla_summary.json（按 mtime, 口径见 sla_paths）"""
+    return latest_summary_path(scenario_dir)
 
 
 def load_scenario_sla(scenario_dir: str):
@@ -95,12 +96,14 @@ def load_scenario_sla(scenario_dir: str):
 
 
 def fmt(v, nd=1):
+    """None / evalscope 失败哨兵（负值, 如全挂轮的 -1000）显示 '-' 而非负数指标。"""
     if v is None:
         return "-"
     try:
-        return f"{float(v):.{nd}f}"
+        v = float(v)
     except (TypeError, ValueError):
         return str(v)
+    return "-" if v < 0 else f"{v:.{nd}f}"
 
 
 def sla_verdict(m: dict, lims: tuple) -> str:

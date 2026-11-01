@@ -1,0 +1,219 @@
+# ============================================================================
+# evalscope 摸高测试配置（dsv41 PD 服务）
+# ----------------------------------------------------------------------------
+# 使用方法（注意: run.sh / runner.py 默认读同目录 config.yaml; 本文件是
+# dsv41 专用配置, 必须显式 --config 指定, 直接 bash run.sh 跑的是 config.yaml）:
+#   1. 在 scenarios 段中注释/取消注释行来选择要跑的场景
+#   2. bash run.sh --config config.dsv41.yaml            # 顺序跑所有启用场景（nohup 后台）
+#      bash run.sh --config config.dsv41.yaml --dry-run  # 只打印命令不执行
+#      python3 report.py                                  # 跑完后汇总所有场景结果为一张表
+#      python3 compare_pools.py                           # mooncake/memcache 两池对照表
+# Mooncake 池对照专用覆盖配置见 config.dsv41.mooncake.yaml（base_config 继承本文件）。
+# ============================================================================
+
+service:
+  # 被测服务 OpenAI 兼容端点（chat completions 完整路径）
+  # MaaS 网关：路径含应用 id（app id = 2f62fe2b-43ab-4780-bfc0-a35d55f779ad）
+  url: http://192.168.0.48:8181/v1/chat/completions
+  # 服务端 served model 名（必须与服务配置一致，否则 404/模型不存在）
+  # GET <url 去掉 /v1/chat/completions>/v1/models 可查；当前服务暴露 glm5.3
+  model: dsv41
+  # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
+  # 被测权重在服务端是 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx），
+  # 该路径只存在于服务端；本机取同词表的 GLM-5.3-Flash-w8a8（tokenizer.json
+  # 与 GLM-5.2 字节数一致）作为本地 tokenizer。改路径前务必确认目录存在，
+  # runner 启动即校验，缺目录直接 FileNotFoundError。
+  tokenizer_path: /mnt/sfs_turbo/model/DeepSeek-V4.1-Flash-1017-w8a8-tok
+  # 服务上下文上限（agentx 回放传 --max-context-length, 超长 trace 会先被过滤,
+  # 避免打到服务端 400; 不设置则不传。glm5.3 端点 max_model_len=204800）
+  max_context_length: 1048576
+
+request:
+  # 是否在请求头中加 Host 参数（经过 LB/代理/网关按域名路由时需要）
+  add_host_header: false
+  # Host 头的值；留空 "" 表示自动取 url 中的主机名
+  host_header: ""
+  # 额外自定义请求头（可选），每行一个 "Key=Value"
+  extra_headers: []
+  #  - "Authorization=Bearer xxx"
+  # API key（可选，设置后自动加 Authorization: Bearer <api_key>）
+  # 网关不校验 token，沿用 sunzhi 约定填 EMPTY（evalscope --api-key 也需要非空）
+  api_key: "EMPTY"
+
+benchmark:
+  # 摸高并发搜索区间 [lower, upper]
+  sla_lower_bound: 1
+  sla_upper_bound: 32
+  # 每个候选并发跑几轮取平均
+  sla_num_runs: 2
+  # 每个候选并发的请求数 = 并发数 x number_multiplier
+  number_multiplier: 2
+  # 正式测试前的 warmup 请求数
+  warmup_num: 10
+  # 数据集生成 worker 进程数（0 = 按 CPU 自动；内存受限的客户端机器建议 1）
+  num_workers: 0
+  # 单场景时间预算（分钟）。>0 时到限终止该场景, 并按已完成的探测档
+  # (results/<场景ID>/<时间戳>/<model>/sla_tuning/sla_parallel_N_run_M/benchmark_summary.json)
+  # 计算 partial 结论: 最大达标并发是真实上限的下界。0 = 不限制
+  time_budget_min: 25
+  # 前缀预热整体限时（分钟）。>0 时到限杀当前档并跳过剩余预热档、直接进入摸高。
+  # 池 put 异常（mooncake TRANSFER_FAIL）或 900k 级输入下, 冷 prefill 预热单场景
+  # 可拖数小时; 两种池跑同一预热协议保证对比口径一致。0 = 不限时
+  warmup_budget_min: 25
+  # 压测运行中健康探活间隔（秒）。>0 时定期 GET 服务的 /v1/models（连通性检查,
+  # 任意 HTTP 状态码都算存活），连续失败时打告警。0 = 关闭
+  health_check_interval_s: 60
+  # 请求采样参数（原样透传给 evalscope --extra-args 的 JSON）
+  # ignore_eos=true: 输出固定到 max_tokens，TPOT/吞吐才可比
+  # thinking 模型必须带 chat_template_kwargs.thinking=false，否则思考 token
+  # 拉高 TPOT 失真；非思考模型删掉 chat_template_kwargs 段即可
+  extra_args:
+    ignore_eos: true
+    chat_template_kwargs:
+      thinking: false
+
+dataset:
+  # gsm8k 数据集生成参数（tools/gen_dataset_only.py）
+  # 每种 (input_len, repeat_rate) 组合只生成一次，之后按文件名复用
+  gsm8k_number: 312
+  # 按数据集覆盖条数（Web UI 数据集视图写入）；键格式 "<input_len>_<hit_rate>"
+  # 优先级高于 gsm8k_number；相同 (input_len, hit_rate) 的场景共用同一数据集
+  number_overrides: {}
+  gsm8k_prefix_num: 1       # 前缀种类数（场景固定为 1）
+  gsm8k_seed: 0             # 随机种子
+  gsm8k_dp: 1               # DP 域数
+  force_regenerate: false   # true = 文件名相同也强制重新生成
+
+# ============================================================================
+# 测试场景（固定清单，按需注释/取消注释）
+# ----------------------------------------------------------------------------
+# 每行一个场景，格式（逗号分隔，顺序固定）:
+#   "dataset, input_len, output_len, cache_hit_rate, prefix_num, ttft_sla_ms, tpot_sla_ms [, dataset_num]"
+#
+#   dataset        : random | gsm8k
+#   input_len      : 输入 token 数（k 简写 = x1024，如 1k=1024, 1000k=1024000）
+#   output_len     : 输出 token 数（同上）
+#   cache_hit_rate : 缓存命中率（random 固定 0；gsm8k: 0 / 0.3 / 0.9）
+#   prefix_num     : 前缀数量（固定 1）
+#   ttft_sla_ms    : avg TTFT SLA 上限（毫秒）
+#   tpot_sla_ms    : avg TPOT SLA 上限（毫秒）
+#   dataset_num    : （可选）数据集条数，仅 gsm8k 有效；不填 = 用 dataset.gsm8k_number 全局默认
+#
+# 注意:
+#   - random 数据集由 evalscope 在线生成（0% 缓存命中，跨轮自动偏移防命中）
+#   - gsm8k 数据集由 run.sh 自动生成+转格式（需要 tokenizer 与 torch/transformers）
+#   - 数据集按文件名复用：相同 (input_len, hit_rate, dataset_num) 只生成一次
+#   - 注释行 = 跳过该场景；取消注释 = 启用
+#   - 批量预生成数据集: bash run.sh --gen-datasets
+# ============================================================================
+scenarios:
+  # ==== DSV41 A3 1P1D：64k/128k/900k -> 1k，缓存命中 0.9（前缀复用）====
+  # TPOT SLA 放宽到 150ms：本机 DSV41 实测 TPOT p50 ~70-93ms，官方 50ms 会全档 FAIL。
+  - "gsm8k, 64k, 1k, 0.9, 1, 10000, 150, 312"
+  - "gsm8k, 128k, 1k, 0.9, 1, 10000, 150, 312"
+  - "gsm8k, 900k, 1k, 0.9, 1, 10000, 150, 312"
+# ============================================================================
+# 精度测试（迁移自 sunzhi_sla_eval run208.sh cmd_accuracy, 通用化）
+# ----------------------------------------------------------------------------
+# 用法: bash run.sh --accuracy            # 后台跑所有启用数据集组
+#       bash run.sh --accuracy -f         # 前台
+#       python3 accuracy_runner.py --list / --dry-run / --only all5 / --report
+# 数据集行格式（逗号分隔, 顺序固定）:
+#   "tag, evalscope_datasets, rounds, effort, max_tokens, batch_size [, k]"
+#   tag              : 数据集组名（结果目录 results/accuracy/<tag>_r<N>/）
+#   evalscope_datasets: 传给 --datasets 的值（空格分隔多个, 如 "aime25 aime26"）
+#   rounds           : 重复轮数（每轮独立 work-dir, 便于算均值/方差）
+#   effort           : reasoning_effort（low/high/xhigh/max/none; 注意 "medium"
+#                      在部分服务上是已知 400 缺陷, 见 sunzhi 仓 F-03）
+#   max_tokens       : 生成上限
+#   batch_size       : --eval-batch-size
+#   k                :（可选）pass@k 的采样次数。默认 1 = 单次 mean 口径（不加
+#                      --repeats）; k>1 时每题采样 k 次, evalscope 按
+#                      aggregation=mean_and_pass_at_k 聚合, 结果同时给出
+#                      mean 与 pass@1..pass@k, 请求量 x k, 结果目录为
+#                      results/accuracy/<tag>_pass@k<k>_r<N>/（与 k=1 的结果隔开,
+#                      且不同 k 各占一个目录, 互不覆盖）
+# ============================================================================
+accuracy:
+  # evalscope 可执行文件（也可被环境变量 EVALSCOPE_BIN 覆盖, 与 performance/env.sh 同名约定）
+  evalscope_bin: evalscope
+  # 非空时运行中导出 http_proxy/https_proxy（evalscope 首次下载数据集需要外网;
+  # 被测服务地址会自动加入 no_proxy）
+  proxy: ""
+  datasets:
+    # 一条命令跑全部 5 个数据集（--datasets 后每个名字必须是独立 argv 元素,
+    # runner 会把本字段按空格拆开逐个传; 拼成一个元素会被 evalscope 当成
+    # 单个基准名报 Benchmark not found）
+    # k=4: pass@k 口径（每题采样 4 次, 请求量 x4, 输出 mean + pass@1..pass@4）
+    - "all5, gpqa_diamond aime25 aime26 gsm8k mmlu, 1, max, 131072, 32, 4"
+
+# ============================================================================
+# AgentX 智能体工作负载回放（agentx_runner.py, SemiAnalysis AgentX v1.0）
+# ----------------------------------------------------------------------------
+# 用 agentx-harness 回放公开的 Claude Code 会话 trace（393 个真实智能体
+# 编码会话, 含多轮/子智能体/前缀复用/KV cache 命中模式）, 测真实智能体
+# 工作负载下的性能（TTFT/吞吐/缓存命中）, 不是精度。
+# 用法: bash run.sh --agentx           # 后台跑（日志 logs/agentx_*.log）
+#       bash run.sh --agentx -f        # 前台
+#       python3 agentx_runner.py --list / --dry-run / --only 256k
+# 数据集变体（HuggingFace semianalysisai/cc-traces-weka-*）:
+#   full  1M ctx, 135k 请求 | 256k  256k ctx, 68k 请求（推荐, 兼容小上下文）
+# 本地裁剪语料（local:<目录>）: 先用 tools/curate_weka_traces.py 从 traces.jsonl
+#   生成, 80 会话 x 8 轮 x ~65k 输入 x ~80% 缓存命中（glm5.3 实测 810 请求:
+#   ISL p50 65.4k, 理论前缀命中 77.75%; 自动固定 mvp 场景/无预热/封顶重放,
+#   详见 agentx_runner.py 头部说明）
+# ============================================================================
+agentx:
+  # agentx-harness 需要的子进程环境变量（覆盖 runner 继承的环境）
+  # - HF_ENDPOINT: 容器内 huggingface.co 直连不通，走 hf-mirror.com
+  # - HF_HOME / HF_HUB_CACHE: 公开语料 + tokenizer 的本地缓存（首次跑会下载 GB 级）
+  # - AIPERF_DATASET_MMAP_CACHE_DIR/BASE_PATH: harness 的数据集 mmap 缓存
+  # 已预置的缓存（2026-10-30 已有 cc-traces-weka-062126 1.8G + zai-org/GLM-5.3
+  # tokenizer, 来自 agentx-eval 的同名缓存软链）:
+  #   /mnt/sfs_turbo/c00803992/agentx-eval/hf_cache
+  env:
+    HF_ENDPOINT: "https://hf-mirror.com"
+    HF_HUB_DISABLE_XET: "1"
+    HF_HOME: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/hf"
+    HF_HUB_CACHE: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/hf/hub"
+    AIPERF_DATASET_MMAP_CACHE_DIR: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/aiperf"
+    AIPERF_DATASET_MMAP_BASE_PATH: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/mmap"
+  datasets:
+    # "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"
+    # tokenizer 留空 = 用 service.tokenizer_path（本地路径）
+    - "256k, semianalysis_cc_traces_weka_with_subagents_256k, 16"
+    # - "full, semianalysis_cc_traces_weka_062126, 16"
+    # 生成: python3 tools/curate_weka_traces.py \
+    #         --src <HF快照>/traces.jsonl --out-dir datasets/weka8 \
+    #         --main-turns 8 --sessions 80 --target-isl 65000 --target-hit 0.80 \
+    #         --max-context 204800 --idle-cap 300
+    # - "weka8, local:datasets/weka8, 80"
+
+# ============================================================================
+# 功能测试（scripts/run_api_e2e.py, Simaas 风格 API E2E 框架）
+# ----------------------------------------------------------------------------
+# 用法: bash run.sh --functional            # 后台跑全部用例（日志 logs/func_*.log）
+#       bash run.sh --functional -f         # 前台
+#       python3 scripts/run_api_e2e.py --list / --dry-run / --only C30
+#       python3 scripts/run_api_e2e.py --base-url https://116.204.8.3/infer7 \
+#           --model 'glm-5' --header 'Host: sz.glm5.com' --skip-bench \
+#           --capability-repeat 10 --insecure
+# 判定口径: PASS / FAIL（计入退出码）/ WARN（已知缺陷, 不计 FAIL）/ SKIP
+# 已知缺陷: reasoning_effort="medium" 在部分服务上必 400 -> 记 WARN（C60）
+# ============================================================================
+functional:
+  # 单请求超时（秒）。思考型模型单次回答可能几十秒; 功能线已全非流式
+  # （流式能力由性能线覆盖）, 整体仍给足超时兜底
+  timeout_s: 300
+  # 输出预算（max_tokens）。GLM-5.3 强制思考, 预算太小会被思考链吃光导致正文为空
+  max_tokens: 2048
+  efforts: [low, high, xhigh, max] # C56 起的 effort 矩阵档位（medium 由紧随其后的编号专项检查）
+  skip: []                         # 跳过的用例（C 编号 / tag / 用例名子串）, 如 [C61, C30]
+  # 接口协议族: openai / messages / gemini / embedding（可多选; 当前服务只暴露 openai）
+  interface_types: [openai]
+  # capability 类用例（/category 以 capability 结尾）重复轮数, 用于抖动检测
+  capability_repeat: 1
+  # 长上下文召回（8k 填充 + needle）默认关闭: 推理模型上耗时高, 需要时置 false
+  skip_long_context_api: true
+  long_context_api_tokens: 8192    # 长上下文填充 token 数
+  output_dir: results/functional   # 报告与各用例响应原文的落盘根目录

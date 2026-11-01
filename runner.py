@@ -35,6 +35,8 @@ from urllib.parse import urlsplit
 KIT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, KIT_ROOT)
 
+import sla_paths  # noqa: E402  # "最新一轮结果"选择（mtime 口径, 见模块 docstring）
+
 try:
     import yaml
 except ImportError:
@@ -156,9 +158,32 @@ def scenario_id(sc: dict) -> str:
     return sid
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """override 盖到 base 上: dict 递归合并, 其余类型（含 list/scalar）整体替换。
+
+    list 整体替换是有意的——scenarios 这类清单做"部分叠加"没有合理语义。"""
+    out = dict(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def load_config(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.safe_load(f) or {}
+    # base_config: 覆盖文件挂在基座配置上（路径相对本文件所在目录）。
+    # 场景/SLA 等大量字段完全相同的两个配置（如 dsv41 两种池）拆成
+    # "基座 + 小覆盖", 避免全量复制后手工同步漂移——改基座忘了改副本
+    # 会让两池跑不同场景, 恰是池对照要防的协议漂移。
+    base_rel = cfg.pop("base_config", None)
+    if base_rel:
+        base_path = (base_rel if os.path.isabs(base_rel)
+                     else os.path.join(os.path.dirname(os.path.abspath(path)), base_rel))
+        with open(base_path, encoding="utf-8") as f:
+            cfg = _deep_merge(yaml.safe_load(f) or {}, cfg)
     for key in ("service", "request", "benchmark", "dataset", "scenarios"):
         if key not in cfg:
             raise ValueError(f"config 缺少必需段: {key}")
@@ -494,15 +519,31 @@ def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
     每档请求数 = 并发 x 5。progress_cb(stage, detail) 用于 Web 页面观测。
     stop_check() 返回 True 时中止预热（Web stop 请求），已启动的档用 killpg 杀掉。
     返回 True=全部档完成; False=有档失败或被中止（不阻断后续摸高, 只告警）。
+
+    warmup_budget_min>0 时预热整体限时: 池 put 异常（如 mooncake TRANSFER_FAIL）或
+    超长输入下, 冷 prefill 逐档预热单场景可拖数小时; 到预算即杀当前档并跳过剩余档,
+    摸高照常进行。两种池跑同一预热协议, 保证对比口径一致。
     """
     sid = scenario_id(sc)
     warm_dir = os.path.join(RESULTS_DIR, sid, "prefix_warmup")
     os.makedirs(warm_dir, exist_ok=True)
+    wb_min = (cfg.get("benchmark") or {}).get("warmup_budget_min") or 0
+    wb_s = wb_min * 60.0 if wb_min else 0.0
+    t0 = time.time()
+
+    def _warmup_over_budget():
+        return wb_s > 0 and time.time() - t0 >= wb_s
+
     all_ok = True
     for conc in PREFIX_WARMUP_CONCURRENCY:
         if stop_check and stop_check():
             print("    [prefix 预热] 收到停止请求, 中止预热")
             return False
+        if _warmup_over_budget():
+            print(f"    [prefix 预热] 已达预热时间预算 {wb_min} 分钟, 跳过剩余档"
+                  f"（并发 {conc} 及以上不预热, 直接进入摸高）")
+            all_ok = False
+            break
         if progress_cb:
             try:
                 progress_cb(f"prefix 预热 {conc} 并发", f"请求数 {conc * 5}")
@@ -515,6 +556,7 @@ def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
         # start_new_session: 可被 stop 整组杀; 轮询 stop 避免长档无法中断
         proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT,
                                 start_new_session=True)
+        budget_killed = False
         while proc.poll() is None:
             if stop_check and stop_check():
                 try:
@@ -524,7 +566,20 @@ def run_prefix_warmup(cfg: dict, sc: dict, prefix_prompts_path: str,
                 proc.wait()
                 print("    [prefix 预热] 收到停止请求, 中止预热")
                 return False
+            if _warmup_over_budget():
+                print(f"    [prefix 预热] 已达预热时间预算 {wb_min} 分钟, 终止当前档"
+                      f"（并发 {conc}）并跳过剩余档, 直接进入摸高")
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait()
+                budget_killed = True
+                break
             time.sleep(2)
+        if budget_killed:
+            all_ok = False
+            break
         if proc.returncode != 0:
             print(f"    [prefix 预热] 并发 {conc} 失败 exit={proc.returncode}（继续下一档）")
             all_ok = False
@@ -675,13 +730,13 @@ def partial_verdict(results_dir: str, sid: str, sc: dict, budget_min) -> None:
     try:
         sdir = os.path.join(results_dir, sid)
         # 只认时间戳目录（YYYYMMDD_HHMMSS），跳过 prefix_warmup 等非结果目录——
-        # 字典序 prefix_warmup > 2026... 会把最新时间戳顶掉，导致 partial 静默丢失
-        ts_dirs = sorted(d for d in glob.glob(os.path.join(sdir, "*"))
-                         if os.path.isdir(d) and re.fullmatch(r"\d{8}_\d{6}", os.path.basename(d)))
-        if not ts_dirs:
+        # 字典序 prefix_warmup > 2026... 会把最新时间戳顶掉，导致 partial 静默丢失。
+        # 取"最新"按 mtime 而非目录名：时间戳命名混用宿主 CST / 容器 UTC 两个时钟
+        # （同刻相差 8 小时），目录序会把旧轮选中——口径见 sla_paths 模块说明。
+        mdir = sla_paths.latest_ts_dir(sdir)
+        if not mdir:
             print(f"  [partial] 未找到结果目录 {sdir}/<时间戳>/, 跳过 partial 判定")
             return
-        mdir = ts_dirs[-1]  # 最新时间戳目录
         # 模型目录：其下应有 sla_tuning；没有子目录就用本身
         subs = sorted(d for d in glob.glob(os.path.join(mdir, "*"))
                       if os.path.isdir(d) and os.path.isdir(os.path.join(d, "sla_tuning")))
