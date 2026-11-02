@@ -31,26 +31,33 @@ def check(name, cond, detail=""):
 # ---------------------------------------------------------------- 配置解析 --
 def test_resolve_config():
     print("[config] resolve_swe_config")
-    # 1) swe 段缺失: 全默认 + 派生路径跟随 work_dir
+    # 1) swe 段缺失: 全默认 + 派生路径跟随 work_dir (kit 相对默认)
     sw = swe_runner.resolve_swe_config({})
-    check("默认 work_dir", sw["work_dir"] == "/mnt/sfs_turbo/c00803992/swe_pro")
+    check("默认 work_dir 含 swe_pro", sw["work_dir"].endswith("swe_pro"))
     check("默认 results_dir 跟随 work_dir",
           sw["results_dir"].endswith(
-              "swe_pro/results/accuracy/swe_bench_pro_dsv4"))
+              "swe_pro/results/accuracy/swe_bench_pro_model"))
     check("默认 rerun_ids 跟随 work_dir",
           sw["rerun_ids"].endswith("swe_pro/rerun_ids.txt"))
     check("默认 logs 派生", sw["batches_log"].endswith("swe_pro/logs/batches.log"))
-    check("默认 model 不回退 service 段", sw["model"] == "dsv4")
+    check("默认 model 回退 service 段为空", sw["model"] == "")
 
-    # 2) swe 段显式优先
-    cfg = {"swe": {"work_dir": "/tmp/wd", "model": "m9",
+    # 2) swe 段显式优先 + model 回退 service
+    cfg = {"service": {"url": "http://x/v1/chat/completions", "model": "svc_m"},
+           "swe": {"work_dir": "/tmp/wd", "model": "m9",
                    "eval_batch_size": 8}}
     sw2 = swe_runner.resolve_swe_config(cfg)
     check("swe.model 覆盖", sw2["model"] == "m9")
     check("显式 work_dir 推导派生路径",
-          sw2["results_dir"] == "/tmp/wd/results/accuracy/swe_bench_pro_dsv4"
+          sw2["results_dir"] == "/tmp/wd/results/accuracy/swe_bench_pro_m9"
           and sw2["rerun_ids"] == "/tmp/wd/rerun_ids.txt")
     check("eval_batch_size 覆盖", sw2["eval_batch_size"] == 8)
+    # model 留空回退 service
+    sw2b = swe_runner.resolve_swe_config(
+        {"service": {"url": "http://x/v1/chat/completions", "model": "svc_m"},
+         "swe": {"work_dir": "/tmp/wd"}})
+    check("model 留空回退 service", sw2b["model"] == "svc_m")
+    check("api_url 留空回退 service", sw2b["api_url"] == "http://x/v1/chat/completions")
 
     # 3) --work-dir 覆盖 + 显式 results_dir 优先于推导
     sw3 = swe_runner.resolve_swe_config(
