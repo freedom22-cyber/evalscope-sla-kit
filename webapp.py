@@ -1236,6 +1236,57 @@ def api_acc_report():
         text = f.read()
     return {"ok": True, "report": text, "path": path}
 
+
+@app.get("/api/accuracy/report/download")
+def api_acc_report_download():
+    """打包下载精度测试报告: scores.md + 各 work-dir 的 reports 明细 json + configs。
+
+    结果目录可能含大量 predictions(GB 级)，只打包「报告相关」文件：
+    scores.md、各轮 reports/<model>/*.json、configs/*（数据集/参数快照），
+    避免整包 predictions。压缩到 TMPDIR 后 FileResponse 流式回传, 结束删除。
+    """
+    import zipfile, tempfile, time as _t
+    from fastapi.responses import FileResponse
+    acc_dir = os.path.join(RESULTS_DIR, "accuracy")
+    if not os.path.isdir(acc_dir):
+        return JSONResponse({"ok": False, "error": "暂无精度结果"}, status_code=404)
+
+    tmp_dir = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    fd, zip_path = tempfile.mkstemp(suffix=".zip", dir=tmp_dir)
+    os.close(fd)
+    packed = 0
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # 1) 汇总报告 scores.md
+            scores = os.path.join(acc_dir, "scores.md")
+            if os.path.isfile(scores):
+                zf.write(scores, "scores.md"); packed += 1
+            # 2) 各 work-dir 的 reports 明细 + configs（排除 predictions/logs 大文件）
+            for wd in sorted(glob.glob(os.path.join(acc_dir, "*_r*"))):
+                if not os.path.isdir(wd):
+                    continue
+                base = os.path.basename(wd)
+                for sub in ("reports", "configs"):
+                    subdir = os.path.join(wd, sub)
+                    if not os.path.isdir(subdir):
+                        continue
+                    for root, _, files in os.walk(subdir):
+                        for f in files:
+                            full = os.path.join(root, f)
+                            arc = os.path.join(base, os.path.relpath(full, wd))
+                            zf.write(full, arc); packed += 1
+        if packed == 0:
+            os.unlink(zip_path)
+            return JSONResponse({"ok": False, "error": "没有可下载的报告文件（尚未运行或已清理）"}, status_code=404)
+    except Exception as e:
+        try: os.unlink(zip_path)
+        except OSError: pass
+        return JSONResponse({"ok": False, "error": f"打包失败: {e}"}, status_code=500)
+
+    raw_name = f"accuracy_report_{_t.strftime('%Y%m%d_%H%M%S')}.zip"
+    return FileResponse(zip_path, media_type="application/zip", filename=raw_name,
+                        background=_FileCleanup(zip_path))
+
 @app.get("/api/accuracy/list")
 def api_acc_list():
     cmd = ["python3", os.path.join(KIT_ROOT, "accuracy_runner.py"), "--config", CONFIG_PATH, "--list"]

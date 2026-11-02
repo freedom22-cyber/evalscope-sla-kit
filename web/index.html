@@ -1058,11 +1058,22 @@ function statusCard(baseId, st, running, labelMap){
   c.append(kv);
   card.append(c);
 }
-function reportCard(baseId, r, emptyIcon, emptyText){
+function reportCard(baseId, r, emptyIcon, emptyText, downloadUrl){
   const card=$('#'+baseId); if(!card) return;
   card.innerHTML='';
   const c=el('div',{cls:'card'});
-  c.append(el('h2',{}, iconEl('doc'), el('span',{},'测试报告')));
+  const h2=el('h2',{}, iconEl('doc'), el('span',{},'测试报告'));
+  if(downloadUrl){
+    const dl=el('button',{cls:'small',style:'margin-left:auto'},'⤓ 下载报告');
+    dl.onclick=()=>{
+      // 直接触发浏览器下载（FileResponse 带 Content-Disposition: attachment）
+      const a=document.createElement('a');
+      a.href=downloadUrl; a.download=''; document.body.appendChild(a); a.click(); a.remove();
+      toast('开始下载报告');
+    };
+    h2.appendChild(dl);
+  }
+  c.append(h2);
   if(!r.ok||!r.report){
     c.append(el('div',{cls:'empty'}, el('div',{cls:'big',html:icon(emptyIcon)}), el('div',{},emptyText)));
   }else{
@@ -1312,7 +1323,7 @@ async function refreshAccStatus(){
 }
 async function loadAccReport(){
   const r=await api('/api/accuracy/report');
-  reportCard('acc-report-card', r, 'target', '暂无精度结果，勾选数据集后点运行');
+  reportCard('acc-report-card', r, 'target', '暂无精度结果，勾选数据集后点运行', '/api/accuracy/report/download');
 }
 async function runAccuracy(withParams){
   const selected=$$('.acc-ds-chk:checked').map(x=>x.value);
