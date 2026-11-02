@@ -60,11 +60,15 @@ KIT_ROOT = os.path.dirname(_HERE)
 
 
 def _default_swe_pro():
-    env = os.environ.get("SWE_WEB_BRIDGE_WORK_DIR")
+    # 与 kit_paths.resolve_swe_work_dir 同口径: 环境变量优先（SWE_WORK_DIR
+    # 或 SWE_WEB_BRIDGE_WORK_DIR）, 其次 kit 相对 results/swe_pro,
+    # 最后本机 NFS live 布局
+    env = (os.environ.get("SWE_WORK_DIR")
+           or os.environ.get("SWE_WEB_BRIDGE_WORK_DIR"))
     if env:
         return env
-    for cand in (os.path.join(KIT_ROOT, "swe_pro"),     # 仓库内 bootstrap 布局
-                 "/mnt/sfs_turbo/c00803992/swe_pro"):   # 本机 NFS live 布局
+    for cand in (os.path.join(KIT_ROOT, "results", "swe_pro"),  # kit 相对布局
+                 "/mnt/sfs_turbo/c00803992/swe_pro"):           # 本机 NFS live 布局
         if os.path.isdir(cand):
             return cand
     return "/mnt/sfs_turbo/c00803992/swe_pro"

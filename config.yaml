@@ -17,11 +17,9 @@ service:
   # GET <url 去掉 /v1/chat/completions>/v1/models 可查；当前服务暴露 glm5.3
   model: glm5.3
   # 被测模型 tokenizer 本地路径（token 计数/长度过滤/gsm8k 数据集生成用）
-  # 被测权重在服务端是 GLM-5.3-w4a4c8-mxfp4（W4A4 MXFP4 + W8A8 MXFP8，1M ctx），
-  # 该路径只存在于服务端；本机取同词表的 GLM-5.3-Flash-w8a8（tokenizer.json
-  # 与 GLM-5.2 字节数一致）作为本地 tokenizer。改路径前务必确认目录存在，
-  # runner 启动即校验，缺目录直接 FileNotFoundError。
-  tokenizer_path: /mnt/sfs_turbo/model/GLM-5.3-Flash-w8a8
+  # 改路径前务必确认目录存在，runner 启动即校验，缺目录直接 FileNotFoundError。
+  # 前端「配置项」页可自由修改，不写死在 config.yaml。
+  tokenizer_path: ""
   # 服务上下文上限（agentx 回放传 --max-context-length, 超长 trace 会先被过滤,
   # 避免打到服务端 400; 不设置则不传。glm5.3 端点 max_model_len=204800）
   max_context_length: 204800
@@ -184,25 +182,14 @@ accuracy:
 #   详见 agentx_runner.py 头部说明）
 # ============================================================================
 agentx:
-  # agentx 可执行文件（环境变量 AGENTX_BIN 优先）。
-  # 这里指向 kit 自带的独立 venv（agentx-harness 1.0.7，含编译好的 crick 0.0.8），
-  # 不用 PATH 上的 agentx —— 宿主 /usr/local/bin 只有坏 wrapper，容器 venv 里
-  # 也没装（crick 需编译，容器到 pypi 通道不稳）。
-  bin: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/agentx-venv/bin/agentx"
-  # agentx-harness 需要的子进程环境变量（覆盖 runner 继承的环境）
-  # - HF_ENDPOINT: 容器内 huggingface.co 直连不通，走 hf-mirror.com
-  # - HF_HOME / HF_HUB_CACHE: 公开语料 + tokenizer 的本地缓存（首次跑会下载 GB 级）
-  # - AIPERF_DATASET_MMAP_CACHE_DIR/BASE_PATH: harness 的数据集 mmap 缓存
-  # 已预置的缓存（2026-10-30 已有 cc-traces-weka-062126 1.8G + zai-org/GLM-5.3
-  # tokenizer, 来自 agentx-eval 的同名缓存软链）:
-  #   /mnt/sfs_turbo/c00803992/agentx-eval/hf_cache
+  # agentx 可执行文件: 环境变量 AGENTX_BIN > 此处显式值 > PATH 上的 agentx。
+  # 留空 = 用 PATH 上的 agentx（setup.sh 安装 agentx-harness 到系统）。
+  bin: ""
+  # agentx-harness 子进程环境变量（覆盖 runner 继承的环境）。
+  # 未列出的 HF_HOME/HF_HUB_CACHE/AIPERF_* 默认落到 kit 本地 .cache/（见 kit_paths.py）。
   env:
     HF_ENDPOINT: "https://hf-mirror.com"
     HF_HUB_DISABLE_XET: "1"
-    HF_HOME: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/hf"
-    HF_HUB_CACHE: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/hf/hub"
-    AIPERF_DATASET_MMAP_CACHE_DIR: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/aiperf"
-    AIPERF_DATASET_MMAP_BASE_PATH: "/mnt/sfs_turbo/c00803992/evalscope-sla-kit/.cache/mmap"
   datasets:
     # "tag, public_dataset | local:<目录>, concurrency [, tokenizer]"
     # tokenizer 留空 = 用 service.tokenizer_path（本地路径）
@@ -267,18 +254,18 @@ functional:
 #       python3 bfcl_runner.py --list / --dry-run / --only simple_python,irrelevance
 #       python3 bfcl_runner.py --limit 10 --only simple_python,irrelevance   # 冒烟
 #       python3 bfcl_runner.py --report         # 重打已有结果汇总表
-# 评测进程在 ais-bench 容器内的独立 venv 跑（venv_python, NFS 共享盘,
-# 容器重建不丢; 不碰 /tmp/bench-venv）; 宿主机发起时自动 docker exec 进容器。
-# ============================================================================
+# 评测进程在独立 venv 跑（setup.sh 在 kit .cache/bfcl-venv 创建）;
+# 容器内直接执行, 宿主机经 docker exec 进容器（容器名由 bfcl.container 或
+# 环境变量 BFCL_CONTAINER 指定, 留空=容器内直跑）。
+# =============================================================================
 bfcl:
-  # bfcl-venv 解释器（容器内路径; 需预装 evalscope==1.14.1 + bfcl-eval==2025.10.27.1）
-  venv_python: /mnt/sfs_turbo/c00803992/bfcl-venv/bin/python
-  # 评测所在容器（宿主机发起 run.sh --bfcl 时经 docker exec 进入）
-  container: ais-bench
+  # bfcl-venv 解释器: 环境变量 BFCL_VENV_PY > 此处显式值 > kit .cache/bfcl-venv/bin/python
+  venv_python: ""
+  # 评测所在容器: 环境变量 BFCL_CONTAINER > 此处显式值 > 空(容器内直跑)
+  container: ""
   # 被测服务（留空 = 用 service.url / service.model / request.api_key）
-  # 当前指向 dsv41 PD 服务（SWE-bench_Pro 评测同款端点）
-  url: http://192.168.0.9:18020/v1
-  model: dsv4
+  url: ""
+  model: ""
   api_key: "EMPTY"
   # 启用子集（默认离线全集 17 个: Non-Live 6 + Live 4 + Relevance 3 + Multi-Turn 4）
   # web_search / memory 子集默认不开（外部依赖, 见下面两个开关）
@@ -322,7 +309,7 @@ bfcl:
 # ----------------------------------------------------------------------------
 # agentic 精度评测: 模型生成补丁 → 每实例独立 amd64 沙箱容器跑金标测试 →
 # resolved 率（ModelScope ScaleAI/SWE-bench_Pro, 实际 642 条）。
-# **全量评测不由本 kit 驱动**: live 分批驱动在 /mnt/sfs_turbo/c00803992/swe_pro
+# **全量评测不由本 kit 驱动**: live 分批驱动在 swe.work_dir
 # （run_all_batches.sh, 642 实例按窗口 32 分批, 每批拉镜像→评→prune）, 产物
 # 也在那里——**勿移动/修改/删除该目录**（watcher/驱动进程正按这些路径工作）。
 # 本 runner 只提供 status / aggregate / rerun-list / env-check / start-rerun。
@@ -330,30 +317,29 @@ bfcl:
 #       python3 swe_runner.py status --json
 #       python3 swe_runner.py aggregate
 #       python3 swe_runner.py start-rerun        # 打印补跑命令（dry-run）
-# 注意: url/model 不回退 service 段——live 评测固定打 dsv4 服务, 与 kit 的
-# service 段（glm5.3 网关）指向不同, 必须显式写。
-# ============================================================================
+# url/model 留空 = 回退 service 段（与 bfcl 同口径）。
+# 机器相关路径全部由环境变量 / kit_paths.py 默认值解析, config 不写死。
+# =============================================================================
 swe:
-  # live 工作区（驱动脚本/logs/results/rerun 清单都在这里; --work-dir 可覆盖,
-  # 未显式配置的派生路径会跟着它推）
-  work_dir: /mnt/sfs_turbo/c00803992/swe_pro
-  # 评测结果 work-dir（reviews/predictions/swe_bench_pro_log; 聚合器读它）
-  results_dir: /mnt/sfs_turbo/c00803992/swe_pro/results/accuracy/swe_bench_pro_dsv4
-  # 补跑清单（EVALSCOPE_INSTANCE_FILE 按行取 instance_id; '#' 行是分组注释）
-  rerun_ids: /mnt/sfs_turbo/c00803992/swe_pro/rerun_ids.txt
-  # SWE-bench_Pro-os 仓库（固定 commit ca10a60; extra_params 指定免重复 clone）
-  repo_path: /mnt/sfs_turbo/c00803992/swe_bench_pro_os/repo
-  # 被测服务（dsv4 PD 服务; 不回退 service 段, 见上方说明）
-  api_url: http://192.168.0.9:18020/v1/chat/completions
-  model: dsv4
-  # 容器内 evalscope 客户端 venv（摸高/精度线同款; 切勿往里装东西）
-  venv: /tmp/bench-venv
-  # 评测所在容器（宿主机发起时经 docker exec 进容器）
-  container: ais-bench
-  # docker unix relay socket（容器内沙箱经它调宿主 dockerd; 勿用 TCP 代理）
-  relay_socket: /mnt/sfs_turbo/c00803992/dockersock/docker.sock
-  # docker 根盘（每批 ~66GB 镜像涨落, status 报余量; 容器内不可见）
-  disk_mount: /mnt/docker
+  # live 工作区: 环境变量 SWE_WORK_DIR > 此处显式值 > kit results/swe_pro
+  work_dir: ""
+  # 评测结果 work-dir（留空 = <work_dir>/results/accuracy/swe_bench_pro_<model>）
+  results_dir: ""
+  # 补跑清单（留空 = <work_dir>/rerun_ids.txt）
+  rerun_ids: ""
+  # SWE-bench_Pro-os 仓库: 环境变量 SWE_REPO_PATH > 此处显式值 > kit .cache/swe_bench_pro_os/repo
+  repo_path: ""
+  # 被测服务（留空 = 回退 service.url / service.model）
+  api_url: ""
+  model: ""
+  # 容器内 evalscope venv: 环境变量 SWE_VENV > 此处显式值 > kit .cache/swe-venv
+  venv: ""
+  # 评测所在容器: 环境变量 SWE_CONTAINER > 此处显式值 > 空(容器内直跑)
+  container: ""
+  # docker unix relay socket: 环境变量 SWE_RELAY_SOCKET > 此处显式值 > /var/run/docker.sock
+  relay_socket: ""
+  # docker 根盘: 环境变量 SWE_DISK_MOUNT > 此处显式值 > /var/lib/docker
+  disk_mount: ""
   # 每批实例数（run_all_batches.sh WINDOW, 仅状态展示用）
   batch_window: 32
   # 数据集总条数（实际 642; 文档写 731 不准）

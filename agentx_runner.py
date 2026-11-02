@@ -141,9 +141,9 @@ def resolve_agentx_bin(cfg: dict) -> str:
     与精度线的 EVALSCOPE_BIN 约定一致（见 accuracy_runner.resolve_evalscope_bin）。
     显式给的路径找不到就照实报错——否则两台机器会静默跑不同版本的 harness。
     """
-    explicit = os.environ.get("AGENTX_BIN") or (cfg.get("agentx") or {}).get("bin")
-    bin_path = explicit or "agentx"
-    if not shutil.which(bin_path):
+    import kit_paths
+    bin_path = kit_paths.resolve_agentx_bin(cfg)
+    if bin_path != "agentx" and not shutil.which(bin_path):
         print(f"警告: 未找到 agentx 可执行文件: {bin_path} "
               f"(可用环境变量 AGENTX_BIN 覆盖; 或先跑 bash setup.sh 安装 agentx-harness)",
               file=sys.stderr)
@@ -270,10 +270,9 @@ def run_variant(cfg: dict, v: dict, dry_run: bool, concurrency: int = None) -> i
     if dry_run:
         return 0
     os.makedirs(work_dir, exist_ok=True)
-    # agentx-harness 需要 HF 镜像/缓存等环境变量: config.yaml agentx.env 覆盖 os.environ
-    env = os.environ.copy()
-    for k, v in ((cfg.get("agentx") or {}).get("env") or {}).items():
-        env[str(k)] = str(v)
+    # agentx-harness 需要 HF 镜像/缓存等环境变量: kit_paths.resolve_agentx_env 统一解析
+    import kit_paths
+    env = kit_paths.resolve_agentx_env(cfg)
     r = subprocess.run(cmd, cwd=KIT_ROOT, env=env)
     if r.returncode != 0:
         print(f"  [失败] exit={r.returncode}")

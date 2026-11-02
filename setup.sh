@@ -12,12 +12,9 @@
 set -e
 PIP_INDEX="${PIP_INDEX:-https://pypi.org/simple}"
 PY="${PYTHON:-python3}"
-REPO="$(cd "$(dirname "$0")" && pwd)"
-CONTAINER="${CONTAINER:-ais-bench}"
-# BFCL 独立 venv 路径（与 config.yaml bfcl.venv_python / bfcl_runner.py 取值同源, 可覆盖）
-# 默认装在仓库内 bfcl-venv —— 全新克隆即装即用（bfcl_runner 在 config 指向的
-# venv 不存在时会回退到这里）; 老部署想沿用外部路径则 BFCL_VENV=/旧/路径 setup.sh
-BFCL_VENV="${BFCL_VENV:-$REPO/bfcl-venv}"
+KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BFCL 独立 venv 路径（与 kit_paths.py 默认值同源, 可覆盖）
+BFCL_VENV="${BFCL_VENV:-$KIT_DIR/.cache/bfcl-venv}"
 
 echo "== [1/4] 检查 Python =="
 "$PY" --version || { echo "未找到 python3"; exit 1; }
@@ -82,18 +79,16 @@ echo "== [3/4] 修复已知依赖坑 =="
   || "$PY" -m pip install pyyaml -i "$PIP_INDEX"
 
 echo "== [3.5/4] BFCL 函数调用评测线（独立 venv, 可选） =="
-# BFCL 依赖装在独立 venv（不与上面 perf 线共用环境, 也不碰 /tmp/bench-venv）。
-# venv 的 bin/python 链到容器内解释器, 必须在 ais-bench 容器里可用, 故创建/装包
-# 统一经 docker exec 派发; setup 跑在容器内时直跑（与 bfcl_runner.resolve_dispatch 同口径）。
-if [ -f /.dockerenv ]; then
+# BFCL 依赖装在独立 venv（不与上面 perf 线共用环境）。
+# venv 建在 kit 本地 .cache/bfcl-venv（可由 BFCL_VENV 环境变量覆盖）。
+# 容器名由 BFCL_CONTAINER 环境变量或 config bfcl.container 指定, 留空=本机直跑。
+BFCL_CONTAINER="${BFCL_CONTAINER:-}"
+if [ -n "$BFCL_CONTAINER" ] && [ -f /.dockerenv ]; then
   BFCL_RUN=()                    # 已在容器内, 直接执行
+elif [ -n "$BFCL_CONTAINER" ]; then
+  BFCL_RUN=(docker exec "$BFCL_CONTAINER")
 else
-  BFCL_RUN=(docker exec "$CONTAINER")
-fi
-# 基础解释器: 优先容器内 python3.12 固定路径（镜像自带）, 不在则回退 PATH 里的 python3
-BFCL_PY="${BFCL_PY:-/usr/local/python3.12.13/bin/python3.12}"
-if ! "${BFCL_RUN[@]}" "$BFCL_PY" --version >/dev/null 2>&1; then
-  BFCL_PY=python3
+  BFCL_RUN=()                    # 无容器配置, 本机直跑
 fi
 # 幂等: venv 已存在且关键包都能导入 → 跳过安装
 #（docker exec 的 OCI 报错走 stdout, 探测命令需 >/dev/null 2>&1 才能完全静音）
@@ -107,7 +102,7 @@ else
   #   - pip 源走 $PIP_INDEX（README 验证配方用清华源; 内网 pip 不通时
   #     PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash setup.sh）
   # 整条链在 if 条件里: 任一步失败（容器没起 / pip 不通）只落 else 告警, 不中断 setup
-  if "${BFCL_RUN[@]}" "$BFCL_PY" -m venv "$BFCL_VENV" \
+  if "${BFCL_RUN[@]}" "$PY" -m venv "$BFCL_VENV" \
      && "${BFCL_RUN[@]}" "$BFCL_VENV/bin/pip" install -i "$PIP_INDEX" \
           "evalscope==1.14.1" "bfcl-eval==2025.10.27.1" "pyarrow==21.0.0" soundfile \
      && "${BFCL_RUN[@]}" "$BFCL_VENV/bin/python" -c "import evalscope, pyarrow, soundfile"; then
@@ -126,7 +121,7 @@ if "$PY" swe_runner.py env-check; then
 else
   echo "警告: SWE 环境未就绪 —— SWE-bench_Pro 线不可用（其余测试线不受影响）"
   echo "  全新部署首次准备（宿主机执行, 幂等）: bash tools/bootstrap_swe_pro.sh"
-  echo "    （建 swe_pro 工作目录 + 克隆 SWE-bench_Pro-os 仓库 + 容器内 bench venv,"
+  echo "    （建 results/swe_pro 工作目录 + 克隆 SWE-bench_Pro-os 仓库 + .cache/swe-venv,"
   echo "      末尾自动调 tools/prepare_swe_bench_env.sh 完成 relay/binfmt/补丁）"
 fi
 

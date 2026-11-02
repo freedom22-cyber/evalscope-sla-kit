@@ -6,17 +6,17 @@
 #
 # Every step is idempotent: this is safe to re-run before each evaluation.
 #
-# 路径可移植化: 默认从脚本自身位置推导（tools/ 的兄弟目录应有 dockersock/
-# 与 swe_bench_pro_os/, 即 bootstrap_swe_pro.sh 的仓库内布局）; 环境变量
-# TOOLS/RELAY_SOCK/CONTAINER/VENV/OS_REPO/SWE_RESULTS 可覆盖。
+# 路径解析与 kit_paths.py 同口径: 环境变量优先（SWE_CONTAINER/SWE_VENV/
+# SWE_REPO_PATH/SWE_RESULTS/RELAY_SOCK/TOOLS）, 默认 kit 相对布局——
+# 工作区 results/swe_pro, evalscope venv .cache/swe-venv, OS 仓库 .cache/。
 set -u
-TOOLS="${TOOLS:-$(cd "$(dirname "$0")" && pwd)}"
-SIBLING="$(cd "$TOOLS/.." && pwd)"
-RELAY_SOCK="${RELAY_SOCK:-$SIBLING/dockersock/docker.sock}"
-CONTAINER="${CONTAINER:-ais-bench}"
-VENV="${VENV:-/tmp/bench-venv}"
-OS_REPO="${OS_REPO:-$SIBLING/swe_bench_pro_os/repo}"
-SWE_RESULTS="${SWE_RESULTS:-$SIBLING/swe_pro/results/accuracy/swe_bench_pro_dsv4}"
+KIT="$(cd "$(dirname "$0")/.." && pwd)"
+TOOLS="${TOOLS:-$KIT/tools}"
+CONTAINER="${SWE_CONTAINER:-ais-bench}"
+VENV="${SWE_VENV:-$KIT/.cache/swe-venv}"
+RELAY_SOCK="${RELAY_SOCK:-${SWE_RELAY_SOCKET:-$KIT/dockersock/docker.sock}}"
+OS_REPO="${SWE_REPO_PATH:-$KIT/.cache/swe_bench_pro_os/repo}"
+SWE_RESULTS="${SWE_RESULTS:-$KIT/results/swe_pro/results/accuracy/swe_bench_pro}"
 
 echo "== 1. docker unix relay =="
 if pgrep -f "docker_unix_relay[.]py" > /dev/null; then

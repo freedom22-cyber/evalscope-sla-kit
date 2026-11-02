@@ -442,6 +442,27 @@ async function renderConfig(){
   actions.append(btn('重置','refresh','',renderConfig));
   card.append(actions);
   m.append(card);
+
+  /* ---- 路径配置卡（agentx / bfcl / swe 机器相关路径） ---- */
+  const ax=cfg.agentx||{}, bf=cfg.bfcl||{}, sw=cfg.swe||{};
+  const pc=el('div',{cls:'card'});
+  pc.append(el('h2',{}, iconEl('folder'), el('span',{},'路径配置'),
+    el('span',{cls:'hint'},'agentx / bfcl / swe 评测线路径；留空 = 环境变量或 kit 默认')));
+  const pg=el('div',{cls:'grid2'});
+  pg.append(field('AgentX bin','agentx_bin',ax.bin||'','agentx 可执行文件路径（留空=PATH 上的 agentx）'));
+  pg.append(field('BFCL venv Python','bfcl_venv_python',bf.venv_python||'','BFCL 评测 venv 解释器（留空=kit .cache/bfcl-venv）'));
+  pg.append(field('BFCL 容器名','bfcl_container',bf.container||'','docker exec 容器名（留空=本机直跑）'));
+  pg.append(field('SWE 工作区','swe_work_dir',sw.work_dir||'','SWE live 工作区（留空=kit results/swe_pro）'));
+  pg.append(field('SWE venv','swe_venv',sw.venv||'','SWE 容器内 evalscope venv（留空=kit .cache/swe-venv）'));
+  pg.append(field('SWE 容器名','swe_container',sw.container||'','docker exec 容器名（留空=本机直跑）'));
+  pg.append(field('SWE 仓库路径','swe_repo_path',sw.repo_path||'','SWE-bench_Pro-os 仓库（留空=kit .cache/swe_bench_pro_os/repo）'));
+  pg.append(field('SWE relay socket','swe_relay_socket',sw.relay_socket||'','docker unix relay socket（留空=/var/run/docker.sock）'));
+  pc.append(pg);
+  const pa=el('div',{cls:'row-actions'});
+  pa.append(btn('保存路径配置','save','primary',savePathConfig));
+  pa.append(btn('重置','refresh','',renderConfig));
+  pc.append(pa);
+  m.append(pc);
 }
 async function testConnection(){
   const url=$('#cfg-url').value;
@@ -482,6 +503,17 @@ async function saveBenchmark(){
   payload.benchmark = Object.fromEntries(Object.entries(payload.benchmark).filter(([k,v])=>v!==undefined));
   const r=await api('/api/config',{method:'POST',body:JSON.stringify(payload)});
   toast(r.ok?'摸高参数已保存':'保存失败');
+}
+async function savePathConfig(){
+  const payload={
+    agentx:{ bin:$('#cfg-agentx_bin').value },
+    bfcl:{ venv_python:$('#cfg-bfcl_venv_python').value, container:$('#cfg-bfcl_container').value },
+    swe:{ work_dir:$('#cfg-swe_work_dir').value, venv:$('#cfg-swe_venv').value,
+          container:$('#cfg-swe_container').value, repo_path:$('#cfg-swe_repo_path').value,
+          relay_socket:$('#cfg-swe_relay_socket').value }
+  };
+  const r=await api('/api/config',{method:'POST',body:JSON.stringify(payload)});
+  toast(r.ok?'路径配置已保存':'保存失败');
 }
 
 /* ============================ 测试用例 ============================ */
@@ -1684,7 +1716,7 @@ async function renderSWE(){
   m.append(el('div',{cls:'page-head'}, el('h1',{},'SWE-bench_Pro 精度'),
     el('div',{cls:'sub'},'agentic 代码补丁评测（ScaleAI/SWE-bench_Pro，642 实例）：模型生成补丁 → 每实例独立 amd64 沙箱容器跑金标测试 → resolved 率。全量评测由 swe_pro 目录的分批驱动负责；本页签监控 + 启停（启停命令经宿主机桥接守护执行，双驱动护栏防撞车）')));
   const bar=el('div',{cls:'toolbar'});
-  bar.append(el('span',{cls:'hint'},'监控 + 启停 · live 产物在 /mnt/sfs_turbo/c00803992/swe_pro（勿移动）'));
+  bar.append(el('span',{cls:'hint'},'监控 + 启停 · live 产物在 swe.work_dir（配置项页可改）'));
   bar.append(el('span',{cls:'spacer'}));
   bar.append(btn('刷新','refresh','small',renderSWE));
   m.append(bar);

@@ -7,11 +7,12 @@
 # the last 90s are re-read, keeping a full pass under ~0.1s.
 # jest cap: --maxWorkers=2 --testTimeout=30000 (element-hq OOM)
 # go cap:   GOMAXPROCS=2 (flipt-io & other Go families' compile OOM)
-# 路径可移植化: 从脚本位置推导（脚本在 swe_pro/ 内, tools/ 是其兄弟目录）
-BASE="$(cd "$(dirname "$0")" && pwd)"
-TOOLS_PY="${STAGED_TOOLS:-$(cd "$BASE/.." && pwd)/tools}"
-WORK_ROOT="${STAGED_WORK:-$BASE/results/accuracy/swe_bench_pro_dsv4}"
-LOG="$BASE/staged_watch.log"
+# 路径解析与 kit_paths.py 同口径: KIT 根 = 脚本上两级, 默认 kit 相对布局
+# （工作区 results/swe_pro）; STAGED_TOOLS/STAGED_WORK 可覆盖
+KIT="$(cd "$(dirname "$0")/../.." && pwd)"
+TOOLS_PY="${STAGED_TOOLS:-$KIT/tools}"
+WORK_ROOT="${STAGED_WORK:-$KIT/results/swe_pro/results/accuracy/swe_bench_pro}"
+LOG="${STAGED_LOG:-$KIT/results/swe_pro/staged_watch.log}"
 export STAGED_TOOLS="$TOOLS_PY" STAGED_WORK="$WORK_ROOT"   # heredoc 用 <<'PYEOF' 不插值
 echo "$(date '+%m-%d %H:%M:%S') watcher v6 start (jest+go, double-read + atomic replace, survives batch gaps)" >> "$LOG"
 # survive batch boundaries: the eval process vanishes for minutes between

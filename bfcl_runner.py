@@ -104,8 +104,8 @@ CATEGORY_WEIGHTS_DICT = dict(CATEGORY_WEIGHTS)
 
 # bfcl 段缺省值（config.yaml 可逐键覆盖）
 DEFAULTS = {
-    "venv_python": "/mnt/sfs_turbo/c00803992/bfcl-venv/bin/python",
-    "container": "ais-bench",
+    "venv_python": "",      # 留空 = kit_paths.resolve_bfcl_venv_python 解析
+    "container": "",        # 留空 = kit_paths.resolve_bfcl_container 解析
     "url": "",          # 留空 = 用 service.url
     "model": "",        # 留空 = 用 service.model
     "api_key": "",      # 留空 = 用 request.api_key（再缺省 EMPTY）
@@ -128,7 +128,9 @@ def load_config(path: str) -> dict:
 
 
 def resolve_bfcl_config(cfg: dict) -> dict:
-    """合并 config bfcl 段与默认值; url/model/api_key 留空回退 service/request 段"""
+    """合并 config bfcl 段与默认值; url/model/api_key 留空回退 service/request 段。
+    venv_python/container 留空走 kit_paths 解析（环境变量 > config > kit 默认）。"""
+    import kit_paths
     bf = dict(DEFAULTS)
     bf.update(cfg.get("bfcl") or {})
     svc = cfg.get("service") or {}
@@ -139,15 +141,9 @@ def resolve_bfcl_config(cfg: dict) -> dict:
         bf["model"] = (svc.get("model") or "").strip()
     if not str(bf.get("api_key") or "").strip():
         bf["api_key"] = str(req.get("api_key") or "").strip() or "EMPTY"
-    # 全新克隆可移植性: 配置的 venv 不存在而仓库内 bfcl-venv 就绪（setup.sh 的
-    # 默认安装位置）→ 回退。本机绝对路径配置存在时优先, live 布局不受影响。
-    venv_py = str(bf.get("venv_python") or "")
-    if venv_py and not os.path.isfile(venv_py):
-        local = os.path.join(KIT_ROOT, "bfcl-venv", "bin", "python")
-        if os.path.isfile(local) and os.access(local, os.X_OK):
-            print(f"提示: config bfcl.venv_python={venv_py} 不存在, "
-                  f"回退仓库内 {local}", file=sys.stderr)
-            bf["venv_python"] = local
+    # 机器路径走 kit_paths 统一解析
+    bf["venv_python"] = kit_paths.resolve_bfcl_venv_python(cfg)
+    bf["container"] = kit_paths.resolve_bfcl_container(cfg)
     return bf
 
 
@@ -239,11 +235,15 @@ def compute_aggregates(subset_scores: dict) -> dict:
 
 # --------------------------------------------------------------- 命令构建 ----
 def resolve_dispatch(bf: dict) -> list:
-    """评测子进程的派发前缀: 容器内直接执行; 宿主机 docker exec 进容器。"""
+    """评测子进程的派发前缀: 容器内直接执行; 宿主机 docker exec 进容器。
+    container 为空 = 容器内直跑（返回空前缀）。"""
     venv_py = str(bf.get("venv_python") or "")
+    container = str(bf.get("container") or "")
     if IN_CONTAINER and os.path.isfile(venv_py) and os.access(venv_py, os.X_OK):
         return []
-    return ["docker", "exec", str(bf.get("container") or "ais-bench")]
+    if not container:
+        return []   # 无容器配置 = 直接在本机执行
+    return ["docker", "exec", container]
 
 
 def build_extra_params(bf: dict, subsets: list) -> dict:
@@ -287,16 +287,17 @@ def build_cmd(bf: dict, subsets: list, work_dir: str, limit: int = None,
 def precheck_dispatch(bf: dict) -> str:
     """非 dry-run 前的轻量预检: venv python 在派发侧可用（否则给中文原因）。"""
     prefix = resolve_dispatch(bf)
-    venv_py = str(bf.get("venv_python"))
+    venv_py = str(bf.get("venv_python") or "")
+    container = str(bf.get("container") or "")
     if not prefix:
-        return None
+        return None   # 容器内直跑或无容器配置, 不预检
     try:
-        r = subprocess.run(["docker", "exec", str(bf.get("container") or "ais-bench"),
+        r = subprocess.run(["docker", "exec", container,
                             "test", "-x", venv_py], capture_output=True, timeout=30)
         if r.returncode != 0:
-            return (f"容器 {bf.get('container')} 里找不到可执行的 {venv_py}。\n"
+            return (f"容器 {container} 里找不到可执行的 {venv_py}。\n"
                     f"请先创建 bfcl-venv（见 README 'BFCL 函数调用评测'）: "
-                    f"docker exec {bf.get('container')} /usr/local/python3.12.13/bin/python3.12 "
+                    f"docker exec {container} python3 "
                     f"-m venv {os.path.dirname(os.path.dirname(venv_py))} 并安装依赖")
     except FileNotFoundError:
         return "宿主机没有 docker 命令（本 runner 需要经 docker exec 进 ais-bench 容器跑评测）"

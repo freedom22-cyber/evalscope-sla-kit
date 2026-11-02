@@ -102,11 +102,11 @@ def main():
         print("没有可对比的池结果")
         return 1
 
-    # SLA 判据从 config.dsv41.yaml 读——与 report.py 同源同口径:
+    # SLA 判据从 config.yaml 读——与 report.py 同源同口径:
     # 场景 ID 推导复用 runner.parse_scenario / scenario_id（含 _pN{prefix_num}
     # 前缀数后缀与 29.5%→29p5pct 高精度取整）, 手写推导丢后缀会让 SLA 列整列失配。
     sla_map = {}
-    cfg = os.path.join(KIT_ROOT, "config.dsv41.yaml")
+    cfg = os.path.join(KIT_ROOT, "config.yaml")
     try:
         import yaml
         from runner import parse_scenario, scenario_id
@@ -124,7 +124,7 @@ def main():
                 continue
             sla_map[scenario_id(sc)] = (sc["ttft_sla_ms"], sc["tpot_sla_ms"])
     except Exception as e:  # noqa: BLE001
-        print(f"  [warn] 读 config.dsv41.yaml 失败，SLA 判定列跳过: {e}")
+        print(f"  [warn] 读 config.yaml 失败，SLA 判定列跳过: {e}")
 
     all_sids = sorted({sid for d in data.values() for sid in d})
     print("=" * 108)

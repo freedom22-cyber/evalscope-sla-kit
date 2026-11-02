@@ -68,22 +68,21 @@ AGGREGATE_PY = os.path.join(KIT_ROOT, "tools", "aggregate_swe_bench_pro.py")
 # 是否在 ais-bench 容器命名空间内（webapp 转调时为 True）
 IN_CONTAINER = os.path.exists("/.dockerenv")
 
-# swe 段缺省值（config.yaml 可逐键覆盖; url/model 不回退 service 段——
-# 本线 live 评测固定打 dsv4 服务, 与 kit 的 service 段指向可以不同）
+# swe 段缺省值（config.yaml 可逐键覆盖; url/model 留空回退 service 段）
 DEFAULTS = {
-    "work_dir": "/mnt/sfs_turbo/c00803992/swe_pro",
-    "results_dir": "",          # 留空 = <work_dir>/results/accuracy/swe_bench_pro_dsv4
-    "rerun_ids": "",            # 留空 = <work_dir>/rerun_ids.txt
-    "repo_path": "/mnt/sfs_turbo/c00803992/swe_bench_pro_os/repo",
-    "api_url": "http://192.168.0.9:18020/v1/chat/completions",
-    "model": "dsv4",
-    "venv": "/tmp/bench-venv",  # 容器内 evalscope 客户端 venv（勿装东西）
-    "container": "ais-bench",
-    "relay_socket": "/mnt/sfs_turbo/c00803992/dockersock/docker.sock",
-    "disk_mount": "/mnt/docker",
-    "batch_window": 32,         # 每批实例数（run_all_batches.sh WINDOW）
-    "total_instances": 642,     # 数据集实际条数（文档写 731, 实测 642）
-    "eval_batch_size": 16,      # 批内并发（补跑默认值）
+    "work_dir": "",           # 留空 = kit_paths.resolve_swe_work_dir 解析
+    "results_dir": "",        # 留空 = <work_dir>/results/accuracy/swe_bench_pro_<model>
+    "rerun_ids": "",          # 留空 = <work_dir>/rerun_ids.txt
+    "repo_path": "",          # 留空 = kit_paths.resolve_swe_repo_path 解析
+    "api_url": "",            # 留空 = 回退 service.url
+    "model": "",              # 留空 = 回退 service.model
+    "venv": "",               # 留空 = kit_paths.resolve_swe_venv 解析
+    "container": "",          # 留空 = kit_paths.resolve_swe_container 解析
+    "relay_socket": "",       # 留空 = kit_paths.resolve_swe_relay_socket 解析
+    "disk_mount": "",         # 留空 = kit_paths.resolve_swe_disk_mount 解析
+    "batch_window": 32,       # 每批实例数（run_all_batches.sh WINDOW）
+    "total_instances": 642,   # 数据集实际条数（文档写 731, 实测 642）
+    "eval_batch_size": 16,    # 批内并发（补跑默认值）
 }
 
 # tqdm 进度行两种形态（同一条 bar 的 \r 刷新原串与 evalscope INFO 日志行）:
@@ -109,52 +108,34 @@ def load_config(path: str) -> dict:
 
 def resolve_swe_config(cfg: dict, work_dir: str = None) -> dict:
     """合并 config swe 段与默认值; 派生路径跟随 work_dir 推导（显式键优先）。
-
-    全新克隆可移植性: 显式配置的路径不存在而仓库内 bootstrap 布局
-    （tools/bootstrap_swe_pro.sh 的默认位置）就绪 → 回退并提示。
-    本机绝对路径配置存在时优先, live 布局不受影响。"""
+    url/model 留空回退 service 段; 机器路径走 kit_paths 统一解析。"""
+    import kit_paths
     sec = cfg.get("swe") or {}
-    wd = str(work_dir or sec.get("work_dir") or DEFAULTS["work_dir"]).rstrip("/")
-    if wd and not os.path.isdir(wd):
-        local = os.path.join(KIT_ROOT, "swe_pro")
-        if os.path.isdir(local):
-            print(f"提示: swe.work_dir={wd} 不存在, 回退仓库内 {local}",
-                  file=sys.stderr)
-            wd = local
-    if not wd:
-        wd = DEFAULTS["work_dir"]
+    svc = cfg.get("service") or {}
     sw = dict(DEFAULTS)
     sw.update(sec)
+    # url/model 回退 service 段
+    if not str(sw.get("api_url") or "").strip():
+        sw["api_url"] = (svc.get("url") or "").strip()
+    if not str(sw.get("model") or "").strip():
+        sw["model"] = (svc.get("model") or "").strip()
+    # 机器路径走 kit_paths 统一解析
+    sw["work_dir"] = kit_paths.resolve_swe_work_dir(cfg)
+    sw["repo_path"] = kit_paths.resolve_swe_repo_path(cfg)
+    sw["venv"] = kit_paths.resolve_swe_venv(cfg)
+    sw["container"] = kit_paths.resolve_swe_container(cfg)
+    sw["relay_socket"] = kit_paths.resolve_swe_relay_socket(cfg)
+    sw["disk_mount"] = kit_paths.resolve_swe_disk_mount(cfg)
+    wd = str(work_dir or sw["work_dir"]).rstrip("/")
+    if not wd:
+        wd = kit_paths.resolve_swe_work_dir(cfg)
     sw["work_dir"] = wd
-    for key, rel, label in (
-            ("repo_path", ("swe_bench_pro_os", "repo"), "SWE-bench_Pro-os 仓库"),
-            ("relay_socket", ("dockersock", "docker.sock"), "docker unix relay")):
-        p = str(sw.get(key) or "")
-        if p and not os.path.exists(p):
-            local = os.path.join(KIT_ROOT, *rel)
-            if os.path.exists(local):
-                print(f"提示: swe.{key}={p} 不存在, 回退仓库内 {local}（{label}）",
-                      file=sys.stderr)
-                sw[key] = local
+    model_tag = str(sw.get("model") or "model").replace("/", "_")
     if not str(sw.get("results_dir") or "").strip():
         sw["results_dir"] = os.path.join(wd, "results", "accuracy",
-                                         "swe_bench_pro_dsv4")
-    elif not os.path.isdir(str(sw["results_dir"])):
-        # 配置的 results_dir 不存在（全新克隆）而派生路径已 bootstrap → 回退,
-        # 否则 work_dir 与 results_dir 会指向两套布局
-        derived = os.path.join(wd, "results", "accuracy", "swe_bench_pro_dsv4")
-        if os.path.isdir(derived):
-            print(f"提示: swe.results_dir={sw['results_dir']} 不存在, "
-                  f"回退派生路径 {derived}", file=sys.stderr)
-            sw["results_dir"] = derived
+                                         f"swe_bench_pro_{model_tag}")
     if not str(sw.get("rerun_ids") or "").strip():
         sw["rerun_ids"] = os.path.join(wd, "rerun_ids.txt")
-    elif not os.path.isfile(str(sw["rerun_ids"])):
-        derived = os.path.join(wd, "rerun_ids.txt")
-        if os.path.isfile(derived):
-            print(f"提示: swe.rerun_ids={sw['rerun_ids']} 不存在, "
-                  f"回退派生路径 {derived}", file=sys.stderr)
-            sw["rerun_ids"] = derived
     sw["logs_dir"] = os.path.join(wd, "logs")
     sw["batches_log"] = os.path.join(sw["logs_dir"], "batches.log")
     sw["eval_rc_log"] = os.path.join(sw["logs_dir"], "eval_rc.log")

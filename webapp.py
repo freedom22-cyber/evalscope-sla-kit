@@ -115,7 +115,8 @@ def update_state(mutator):
 def effective_config():
     cfg = runner.load_config(CONFIG_PATH)
     st = load_state()
-    for sec in ("service", "request", "benchmark", "accuracy", "functional"):
+    for sec in ("service", "request", "benchmark", "accuracy", "functional",
+                 "agentx", "bfcl", "swe"):
         ov = st.get(sec + "_override") or {}
         if ov:
             cfg.setdefault(sec, {}).update(ov)
@@ -437,6 +438,8 @@ def api_get_config():
     cfg, _ = effective_config()
     return {"service": cfg.get("service", {}), "request": cfg.get("request", {}),
             "benchmark": cfg.get("benchmark", {}), "dataset": cfg.get("dataset", {}),
+            "agentx": cfg.get("agentx", {}), "bfcl": cfg.get("bfcl", {}),
+            "swe": cfg.get("swe", {}),
             "host_header_effective": runner.build_headers(cfg)}
 
 
@@ -478,7 +481,7 @@ def api_service_test(payload: dict = Body(default={})):
 @app.post("/api/config")
 def api_set_config(payload: dict = Body(...)):
     st = load_state()
-    for sec in ("service", "request", "benchmark"):
+    for sec in ("service", "request", "benchmark", "agentx", "bfcl", "swe"):
         if sec in payload and isinstance(payload[sec], dict):
             st[sec + "_override"] = payload[sec]
     save_state(st)

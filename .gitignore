@@ -32,9 +32,7 @@ web_state.json
 .cache/
 
 # 可移植化部署产物（bootstrap_swe_pro.sh / setup.sh 生成, 勿提交）
-bfcl-venv/
-swe_pro/
-swe_bench_pro_os/
+# （.cache/ 与 results/ 已在上方忽略; 这里补 bootstrap 特有的）
 dockersock/
 
 # data_picker.py 运行时状态（已挑过的 id 清单, 运行时追加）

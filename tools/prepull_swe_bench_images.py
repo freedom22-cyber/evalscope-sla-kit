@@ -21,9 +21,8 @@ import sys
 import time
 
 # DOCKER_HOST: 环境变量优先（run_all_batches.sh 会显式传 relay 路径）;
-# 兜底 SWE_RELAY_SOCK, 再兜底原始 NFS 部署机的绝对路径（仅本机布局成立）。
-_RELAY = os.environ.get('SWE_RELAY_SOCK',
-                        '/mnt/sfs_turbo/c00803992/dockersock/docker.sock')
+# 兜底 SWE_RELAY_SOCKET（与 kit_paths.py 同名）, 再兜底 /var/run/docker.sock。
+_RELAY = os.environ.get('SWE_RELAY_SOCKET', '/var/run/docker.sock')
 os.environ.setdefault('DOCKER_HOST', 'unix://' + _RELAY.removeprefix('unix://'))
 
 import docker  # noqa: E402

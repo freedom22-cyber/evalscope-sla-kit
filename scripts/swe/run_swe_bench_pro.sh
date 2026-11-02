@@ -29,19 +29,24 @@
 #     已由 tools/patch_swe_bench_pro_tests.py 修补（容器重建后需重打）。
 # ============================================================================
 set -eu
-BASE="$(cd "$(dirname "$0")" && pwd)"      # = swe_pro/
-SIBLING="$(cd "$BASE/.." && pwd)"          # tools/ dockersock/ swe_bench_pro_os/ 所在
-VENV="${VENV:-/tmp/bench-venv}"
-cd "$BASE"
+# KIT 根 = 脚本位置上两级（脚本在 scripts/swe/ 或 results/swe_pro/ 都成立）,
+# 与 kit_paths.py 的默认布局（.cache/swe-venv, results/swe_pro）对齐
+KIT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$(dirname "$0")"
 mkdir -p logs results/accuracy
 
-export DOCKER_HOST="${DOCKER_HOST:-unix://$SIBLING/dockersock/docker.sock}"
-export PATH="$VENV/bin:$PATH"
+# 机器相关路径全部从环境变量取（由 swe_runner / kit_paths.py 注入）
+export DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
+export PATH="${SWE_VENV:-$KIT/.cache/swe-venv}/bin:$PATH"
 
-API_URL="${API_URL:-http://192.168.0.9:18020/v1/chat/completions}"
-MODEL="${MODEL:-dsv4}"
-REPO_PATH="${REPO_PATH:-$SIBLING/swe_bench_pro_os/repo}"
-WORK_DIR="${WORK_DIR:-$BASE/results/accuracy/swe_bench_pro_dsv4}"
+API_URL="${API_URL:-}"
+MODEL="${MODEL:-}"
+REPO_PATH="${REPO_PATH:-$KIT/.cache/swe_bench_pro_os/repo}"
+WORK_DIR="${WORK_DIR:-$KIT/results/swe_pro/results/accuracy/swe_bench_pro}"
+
+if [ -z "$API_URL" ] || [ -z "$MODEL" ]; then
+  echo "错误: API_URL 和 MODEL 必须由环境变量或 swe_runner 注入" >&2; exit 1
+fi
 
 # max_steps: 默认 250（官方默认）。内存/CPU 限制避免 NodeBB 等实例被 OOM kill。
 AGENT_CONFIG="${AGENT_CONFIG:-{\"mode\":\"native\",\"strategy\":\"swe_bench_toolcall\",\"max_steps\":250}}"
@@ -52,7 +57,7 @@ SANDBOX="${SANDBOX:-{\"enabled\":true,\"engine\":\"docker\",\"default_config\":{
 # the evalscope rerun-temp deletion eat the whole batch's review rows
 # (batch 134, 2026-10-31).  Capture the rc and keep going instead.
 set +e
-"$VENV/bin/evalscope" eval \
+"${SWE_VENV:-$KIT/.cache/swe-venv}/bin/evalscope" eval \
   --model "$MODEL" --model-id "$MODEL" --eval-type openai_api \
   --api-url "$API_URL" \
   --api-key EMPTY \
@@ -72,8 +77,10 @@ set +e
   "$@"
 EVAL_RC=$?
 set -e
+SWE_LOGS_DIR="${SWE_LOGS_DIR:-$KIT/results/swe_pro/logs}"
+mkdir -p "$SWE_LOGS_DIR" "$SWE_LOGS_DIR/../reviews_archive" || true
 echo "[eval] offset=${EVALSCOPE_DATASET_OFFSET:-0} rc=$EVAL_RC ended $(date +%H:%M:%S)" \
-  >> "$BASE/logs/eval_rc.log" || true
+  >> "$SWE_LOGS_DIR/eval_rc.log" || true
 
 # ---- post-eval snapshot (run_all_batches re-reads this file fresh per batch).
 # evalscope reviews are transactional: a normal eval end os.replace()s the
@@ -81,9 +88,9 @@ echo "[eval] offset=${EVALSCOPE_DATASET_OFFSET:-0} rc=$EVAL_RC ended $(date +%H:
 # crashed eval deletes the temp instead.  Freeze whatever survived so no
 # batch boundary can lose review data.  review_guard.sh additionally
 # live-copies the temp file while the eval writes it.
-snap_dst="$BASE/reviews_archive/post_${EVALSCOPE_DATASET_OFFSET:-0}_$(date +%H%M%S)"
+snap_dst="$(dirname "$SWE_LOGS_DIR")/reviews_archive/post_${EVALSCOPE_DATASET_OFFSET:-0}_$(date +%H%M%S)"
 mkdir -p "$snap_dst" || true
 for f in "$WORK_DIR"/reviews/*/*.jsonl*; do
   [ -f "$f" ] && cat "$f" > "$snap_dst/$(basename "$f")" || true
 done
-echo "[snapshot] $(date +%H:%M:%S) offset=${EVALSCOPE_DATASET_OFFSET:-0}: $(ls "$snap_dst" 2>/dev/null | wc -l) files, $(cat "$snap_dst"/* 2>/dev/null | wc -l) rows" >> "$BASE/logs/snapshots.log" || true
+echo "[snapshot] $(date +%H:%M:%S) offset=${EVALSCOPE_DATASET_OFFSET:-0}: $(ls "$snap_dst" 2>/dev/null | wc -l) files, $(cat "$snap_dst"/* 2>/dev/null | wc -l) rows" >> "$SWE_LOGS_DIR/snapshots.log" || true
