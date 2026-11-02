@@ -12,8 +12,12 @@
 set -e
 PIP_INDEX="${PIP_INDEX:-https://pypi.org/simple}"
 PY="${PYTHON:-python3}"
+REPO="$(cd "$(dirname "$0")" && pwd)"
+CONTAINER="${CONTAINER:-ais-bench}"
 # BFCL 独立 venv 路径（与 config.yaml bfcl.venv_python / bfcl_runner.py 取值同源, 可覆盖）
-BFCL_VENV="${BFCL_VENV:-/mnt/sfs_turbo/c00803992/bfcl-venv}"
+# 默认装在仓库内 bfcl-venv —— 全新克隆即装即用（bfcl_runner 在 config 指向的
+# venv 不存在时会回退到这里）; 老部署想沿用外部路径则 BFCL_VENV=/旧/路径 setup.sh
+BFCL_VENV="${BFCL_VENV:-$REPO/bfcl-venv}"
 
 echo "== [1/4] 检查 Python =="
 "$PY" --version || { echo "未找到 python3"; exit 1; }
@@ -84,7 +88,12 @@ echo "== [3.5/4] BFCL 函数调用评测线（独立 venv, 可选） =="
 if [ -f /.dockerenv ]; then
   BFCL_RUN=()                    # 已在容器内, 直接执行
 else
-  BFCL_RUN=(docker exec ais-bench)
+  BFCL_RUN=(docker exec "$CONTAINER")
+fi
+# 基础解释器: 优先容器内 python3.12 固定路径（镜像自带）, 不在则回退 PATH 里的 python3
+BFCL_PY="${BFCL_PY:-/usr/local/python3.12.13/bin/python3.12}"
+if ! "${BFCL_RUN[@]}" "$BFCL_PY" --version >/dev/null 2>&1; then
+  BFCL_PY=python3
 fi
 # 幂等: venv 已存在且关键包都能导入 → 跳过安装
 #（docker exec 的 OCI 报错走 stdout, 探测命令需 >/dev/null 2>&1 才能完全静音）
@@ -98,7 +107,7 @@ else
   #   - pip 源走 $PIP_INDEX（README 验证配方用清华源; 内网 pip 不通时
   #     PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple bash setup.sh）
   # 整条链在 if 条件里: 任一步失败（容器没起 / pip 不通）只落 else 告警, 不中断 setup
-  if "${BFCL_RUN[@]}" /usr/local/python3.12.13/bin/python3.12 -m venv "$BFCL_VENV" \
+  if "${BFCL_RUN[@]}" "$BFCL_PY" -m venv "$BFCL_VENV" \
      && "${BFCL_RUN[@]}" "$BFCL_VENV/bin/pip" install -i "$PIP_INDEX" \
           "evalscope==1.14.1" "bfcl-eval==2025.10.27.1" "pyarrow==21.0.0" soundfile \
      && "${BFCL_RUN[@]}" "$BFCL_VENV/bin/python" -c "import evalscope, pyarrow, soundfile"; then
@@ -116,7 +125,9 @@ if "$PY" swe_runner.py env-check; then
   echo "  SWE 环境就绪（bash run.sh --swe status 可监控评测）"
 else
   echo "警告: SWE 环境未就绪 —— SWE-bench_Pro 线不可用（其余测试线不受影响）"
-  echo "  完整准备（宿主机执行, 幂等）: bash tools/prepare_swe_bench_env.sh"
+  echo "  全新部署首次准备（宿主机执行, 幂等）: bash tools/bootstrap_swe_pro.sh"
+  echo "    （建 swe_pro 工作目录 + 克隆 SWE-bench_Pro-os 仓库 + 容器内 bench venv,"
+  echo "      末尾自动调 tools/prepare_swe_bench_env.sh 完成 relay/binfmt/补丁）"
 fi
 
 echo "== [4/4] 验证 =="
@@ -138,5 +149,5 @@ echo "  1. 编辑 config.yaml（url / model / tokenizer_path / 场景开关）"
 echo "  2. bash run.sh --dry-run   预检命令"
 echo "  3. bash run.sh             开始摸高（nohup 后台）"
 echo "  4. bash run.sh --bfcl      函数调用精度评测（可选线, bfcl-venv 就绪时可用）"
-echo "  5. bash run.sh --swe status  SWE-bench_Pro 评测监控（可选线, 需先跑"
-echo "     tools/prepare_swe_bench_env.sh 准备 relay/binfmt/venv 补丁）"
+echo "  5. bash run.sh --swe status  SWE-bench_Pro 评测监控（可选线）"
+echo "     全新部署先跑: bash tools/bootstrap_swe_pro.sh（一次性, 幂等）"
