@@ -1884,7 +1884,7 @@ function buildSWEStatusCard(st){
   if(p){
     progV=esc(p.n+'/'+p.total)+'（'+p.pct+'%）'
       +(p.overall_total?(' · 全量 '+p.overall_n+'/'+p.overall_total):'')
-      +' · 已跑 '+esc(p.elapsed||'-')+' · ETA '+esc(p.eta||'-')+' · '+esc(p.rate)+'s/it'
+      +' · 已跑 '+esc(p.elapsed||'-')+' · ETA '+esc(p.eta||'-')+' · '+esc(p.rate)+esc(p.rate_unit||'s/it')
       +(p.ts?(' @'+esc(p.ts)):'')+pctBar(p.pct);
   }
   kv.append(el('div',{cls:'k'},'进度'), el('div',{cls:'v',html:progV}));
@@ -1923,6 +1923,21 @@ function buildSWEStatusCard(st){
     b.onclick=()=>showLog(st.rerun_log);
     rl.append(b);
     kv.append(el('div',{cls:'k'},'rerun 日志'), rl);
+  }
+  /* 评测命令: 实跑进程口径（原文）优先, 桥接 state 兜底; 复制按钮便于复现 */
+  const cmds=(st.eval_cmds||[]).concat(st.eval_cmd_fallback?[st.eval_cmd_fallback]:[]);
+  if(cmds.length){
+    const cv=el('div',{cls:'v'});
+    cmds.forEach((c,i)=>{
+      const line=el('div',{style:'margin:'+(i?'4px 0 0':'0')+';word-break:break-all'});
+      const code=el('code',{style:'font-size:11px'},c);
+      line.append(code);
+      const cp=el('button',{cls:'small',style:'margin-left:6px'},'复制');
+      cp.onclick=()=>copyText(c,cp,'命令');
+      line.append(cp);
+      cv.append(line);
+    });
+    kv.append(el('div',{cls:'k'},st.eval_cmds&&st.eval_cmds.length?'评测命令':'启动命令'), cv);
   }
   c.append(kv);
   if(st.namespace==='container'){
