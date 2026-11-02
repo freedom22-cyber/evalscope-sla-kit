@@ -36,3 +36,6 @@ bfcl-venv/
 swe_pro/
 swe_bench_pro_os/
 dockersock/
+
+# data_picker.py 运行时状态（已挑过的 id 清单, 运行时追加）
+tools/picked_ids.txt
