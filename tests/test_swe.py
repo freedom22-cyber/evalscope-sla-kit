@@ -111,6 +111,7 @@ def test_parse_progress_line():
     check("tqdm 原始行: pct/elapsed/eta/rate",
           p["pct"] == 94 and p["elapsed"] == "3:55:05" and p["eta"] == "20:46"
           and abs(p["rate"] - 623.07) < 1e-9)
+    check("tqdm 原始行: 单位 s/it 原样保留", p["rate_unit"] == "s/it")
     check("tqdm 原始行: 无日志时间戳", p["ts"] is None)
 
     info = ("2026-10-31 02:58:27 - evalscope - INFO: "
@@ -134,6 +135,8 @@ def test_parse_progress_line():
     check("无 ETA 行: n/total/rate",
           p3["n"] == 0 and p3["total"] == 68 and p3["rate"] == "?"
           and p3["eta"] == "?")
+    check("无 ETA 行: 单位 it/s（展示层拼接用, 勿显示 ?s/it）",
+          p3["rate_unit"] == "it/s")
 
 
 def test_find_progress():

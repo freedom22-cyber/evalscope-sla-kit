@@ -92,7 +92,7 @@ DEFAULTS = {
 #     [Elapsed: 3:56:05 < Remaining: 20:46, 623.07s/it]
 _PROG_RE = re.compile(
     r"Evaluating\[swe_bench_pro\][:\s]*(\d+)%\|[^|\d]*\|?\s*(\d+)/(\d+)\s*\["
-    r"[^\]]*?(\d[\d:]+)\s*<\s*([^\],]+?),\s*([\d.?]+)\s*(?:s/it|it/s)\]")
+    r"[^\]]*?(\d[\d:]+)\s*<\s*([^\],]+?),\s*([\d.?]+)\s*(s/it|it/s)\]")
 _TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _BATCH_HDR_RE = re.compile(r"window=(\d+)\s+concurrency=(\d+)\s+total=(\d+)"
                            r"\s+start_offset=(-?\d+)")
@@ -238,9 +238,12 @@ def parse_progress_line(line: str) -> dict:
     eta = m.group(5).replace("Remaining:", "").strip()
     ts = _TS_RE.search(line)
     rate = m.group(6)
+    # rate_unit: tqdm 按 rate 选单位（无 ETA 阶段 ?it/s、慢速 s/it、快速 it/s）,
+    # 展示层按原样拼, 别硬编码 s/it——否则无 ETA 阶段会显示 "?s/it"
     return {"pct": int(m.group(1)), "n": int(m.group(2)),
             "total": int(m.group(3)), "elapsed": m.group(4), "eta": eta,
             "rate": rate if rate == "?" else float(rate),
+            "rate_unit": m.group(7),
             "ts": ts.group(1) if ts else None}
 
 
@@ -611,7 +614,7 @@ def cmd_status(sw: dict, as_json: bool) -> int:
             overall = f"  全量 {p['overall_n']}/{p['overall_total']}"
         ts = f"  @{p['ts']}" if p.get("ts") else ""
         print(f"进度: {p['n']}/{p['total']} ({p['pct']}%)  "
-              f"已跑 {p['elapsed']}  ETA {p['eta']} ({p['rate']}s/it)"
+              f"已跑 {p['elapsed']}  ETA {p['eta']} ({p['rate']}{p.get('rate_unit') or 's/it'})"
               f"{overall}{ts}")
         print(f"      来源: {p['log']}")
     rc = st["eval_rc"]

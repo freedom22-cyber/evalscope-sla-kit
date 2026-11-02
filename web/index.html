@@ -1873,7 +1873,7 @@ function buildSWEStatusCard(st){
   if(p){
     progV=esc(p.n+'/'+p.total)+'（'+p.pct+'%）'
       +(p.overall_total?(' · 全量 '+p.overall_n+'/'+p.overall_total):'')
-      +' · 已跑 '+esc(p.elapsed||'-')+' · ETA '+esc(p.eta||'-')+' · '+esc(p.rate)+'s/it'
+      +' · 已跑 '+esc(p.elapsed||'-')+' · ETA '+esc(p.eta||'-')+' · '+esc(p.rate)+esc(p.rate_unit||'s/it')
       +(p.ts?(' @'+esc(p.ts)):'')+pctBar(p.pct);
   }
   kv.append(el('div',{cls:'k'},'进度'), el('div',{cls:'v',html:progV}));
