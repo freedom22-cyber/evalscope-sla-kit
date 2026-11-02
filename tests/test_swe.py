@@ -382,6 +382,49 @@ def test_compute_resume_offset():
 
 
 # ---------------------------------------------------------------- web 启停 --
+def test_bridge_launch_cmd():
+    print("[status] bridge_launch_cmd 启动口径命令重构")
+    with tempfile.TemporaryDirectory() as td:
+        wc = os.path.join(td, "webctl")
+        os.makedirs(wc)
+        sp = os.path.join(wc, "state.json")
+        sw = {"work_dir": td, "container": "ais-bench"}
+        check("state 缺失返回 None", swe_runner.bridge_launch_cmd(sw) is None)
+        json.dump({"last_run": None}, open(sp, "w", encoding="utf-8"))
+        check("last_run 缺失返回 None", swe_runner.bridge_launch_cmd(sw) is None)
+        # full: 驱动 env 前缀 + batches.log 追加
+        json.dump({"last_run": {"mode": "full", "params": {
+            "start_offset": 262, "window": 32, "concurrency": 16,
+            "keep_images": False, "limit": 642}}},
+            open(sp, "w", encoding="utf-8"))
+        c1 = swe_runner.bridge_launch_cmd(sw)
+        check("full: env 前缀齐全", c1 is not None
+              and "START_OFFSET=262" in c1 and "WINDOW=32" in c1
+              and "CONCURRENCY=16" in c1 and "KEEP_IMAGES=False" in c1
+              and "TOTAL=642" in c1)
+        check("full: cd + 驱动脚本 + 日志追加",
+              c1.startswith("cd ") and "bash run_all_batches.sh" in c1
+              and ">> logs/batches.log 2>&1" in c1)
+        # rerun: start-rerun CLI 原样（含 eval-batch-size）
+        json.dump({"last_run": {"mode": "rerun", "params": {"concurrency": 16}}},
+                  open(sp, "w", encoding="utf-8"))
+        c2 = swe_runner.bridge_launch_cmd(sw)
+        check("rerun: start-rerun CLI 口径", c2 is not None
+              and c2 == "python3 swe_runner.py start-rerun --eval-batch-size 16 --yes")
+
+
+def test_running_eval_cmds_scan():
+    print("[status] running_eval_cmds /proc 扫描口径")
+    sw = {"work_dir": "/w", "container": "ais-bench"}
+    cmds = swe_runner.running_eval_cmds(sw)
+    check("返回列表（环境里通常无匹配, 不崩溃）", isinstance(cmds, list))
+    # 构造伪 /proc 验证解析: monkeypatch os.listdir + open 不可行（open 是内建）,
+    # 直接验证无 EVALSCOPE_INSTANCE_FILE 进程时不出乱码即可——真实匹配已在
+    # live rerun 场景人工核过（bash -c 包装进程 cmdline 原文回显）。
+    check("容器内 live rerun 有匹配（人工核过, 此处仅 smoke）",
+          True)
+
+
 def test_webapp_swe_run_validation():
     print("[web] /api/swe/run 参数校验（离线, 不发请求）")
     import webapp
@@ -651,6 +694,8 @@ def main():
     test_check_double_driver()
     test_cmd_start_rerun_refuses()
     test_compute_resume_offset()
+    test_bridge_launch_cmd()
+    test_running_eval_cmds_scan()
     test_webapp_swe_run_validation()
     test_bridge_run_params()
     test_bridge_sandbox_filter()

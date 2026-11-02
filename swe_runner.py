@@ -303,6 +303,84 @@ def latest_rerun_log(sw: dict) -> str:
     return max(pats, key=lambda p: (os.path.getmtime(p), p)) if pats else None
 
 
+def running_eval_cmds(sw: dict) -> list:
+    """当前实跑的评测命令原文（/proc 进程口径, 供 CLI/web 展示与复现）。
+
+    rerun: 容器内 docker exec 拉起的 bash -c 包装进程, cmdline 即
+    start-rerun 拼的完整分片串联命令——原文回显, 与实跑零出入。
+    full: 宿主 run_all_batches.sh 驱动 + 读其 environ 还原驱动参数
+    （容器内看不到宿主进程, 由 bridge_state 口径兜底）。
+    找不到（分片间隙/已结束/权限）返回空列表。
+    """
+    cmds = []
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return cmds
+    for pid in pids:
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                argv = [a for a in f.read().decode("utf-8", "replace").split("\0") if a]
+        except OSError:
+            continue
+        if not argv:
+            continue
+        base = os.path.basename(argv[0])
+        if base == "bash" and "-c" in argv[:2] and len(argv) > 2 \
+                and "EVALSCOPE_INSTANCE_FILE=" in argv[2]:
+            # 与 build_rerun_plan 的 docker_cmd 同形: docker exec -d <容器> bash -c <shell>
+            cmds.append("docker exec -d %s bash -c %s"
+                        % (sw["container"], shlex.quote(argv[2])))
+        elif any("run_all_batches" in a for a in argv[:2]):
+            env = {}
+            try:
+                with open("/proc/%s/environ" % pid, "rb") as f:
+                    for kv in f.read().decode("utf-8", "replace").split("\0"):
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            if k in ("START_OFFSET", "WINDOW", "CONCURRENCY",
+                                     "KEEP_IMAGES", "TOTAL"):
+                                env[k] = v
+            except OSError:
+                pass
+            pairs = " ".join("%s=%s" % (k, env[k]) for k in
+                             ("START_OFFSET", "WINDOW", "CONCURRENCY",
+                              "KEEP_IMAGES", "TOTAL") if k in env)
+            cmds.append("cd %s && %s bash run_all_batches.sh"
+                        % (shlex.quote(sw["work_dir"]), pairs).replace("  ", " "))
+    return cmds
+
+
+def bridge_launch_cmd(sw: dict) -> str:
+    """webctl/state.json 的 last_run → 启动口径命令（full=驱动 env 前缀,
+    rerun=start-rerun CLI 原样）。进程口径找不到时的兜底展示。"""
+    try:
+        with open(os.path.join(sw["work_dir"], "webctl", "state.json"),
+                  encoding="utf-8") as f:
+            st = json.load(f)
+        lr = st.get("last_run") or {}
+    except (OSError, ValueError):
+        return None
+    mode, params = lr.get("mode"), lr.get("params") or {}
+    if not mode:
+        return None
+    if mode == "full":
+        pairs = []
+        for k, pk in (("START_OFFSET", "start_offset"), ("WINDOW", "window"),
+                      ("CONCURRENCY", "concurrency"), ("KEEP_IMAGES", "keep_images")):
+            if params.get(pk) is not None:
+                pairs.append("%s=%s" % (k, params[pk]))
+        if params.get("limit"):
+            pairs.append("TOTAL=%s" % params["limit"])
+        return ("cd %s && %s bash run_all_batches.sh >> logs/batches.log 2>&1"
+                % (shlex.quote(sw["work_dir"]), " ".join(pairs)))
+    if mode == "rerun":
+        c = params.get("concurrency") or params.get("eval_batch_size")
+        return ("python3 swe_runner.py start-rerun %s--yes"
+                % ("--eval-batch-size %s " % c if c else ""))
+    return None
+
+
 def parse_eval_rc(path: str, tail_n: int = 8) -> dict:
     """解析 logs/eval_rc.log（run_swe_bench_pro.sh 尾部追加的退出码记录）。
 
@@ -542,6 +620,9 @@ def collect_status(sw: dict) -> dict:
     eval_rc = parse_eval_rc(sw["eval_rc_log"])
     rerun = parse_rerun_ids(sw["rerun_ids"])
     rerun.pop("groups", None)   # 轻量: status 只带计数, 明细走 rerun-list
+    # 评测命令: 实跑进程口径优先（原文零出入）, 桥接 state 兜底
+    eval_cmds = running_eval_cmds(sw)
+    eval_cmd_fallback = None if eval_cmds else bridge_launch_cmd(sw)
     return {
         "ok": True,
         "namespace": "container" if IN_CONTAINER else "host",
@@ -560,6 +641,8 @@ def collect_status(sw: dict) -> dict:
         "rerun": rerun,
         "rerun_log": rlog,
         "rerun_active": rerun_active,
+        "eval_cmds": eval_cmds,
+        "eval_cmd_fallback": eval_cmd_fallback,
         "log_mtime": {
             "batches_log": _mtime_str(sw["batches_log"]),
             "current_batch_log": _mtime_str(blog) if blog else None,
@@ -668,6 +751,11 @@ def cmd_status(sw: dict, as_json: bool) -> int:
         print(f"rerun 日志: {st['rerun_log']}"
               + ("（近 15 分钟有写入, 推进中; tail -f 看实时）" if st.get("rerun_active")
                  else ""))
+    cmds = st.get("eval_cmds") or ([st["eval_cmd_fallback"]] if st.get("eval_cmd_fallback") else [])
+    if cmds:
+        print("评测命令:")
+        for c in cmds:
+            print(f"  {c}")
     if st["namespace"] == "container":
         print(f"注: 本进程在容器内, {HOST_ONLY_NOTE}")
     return 0
