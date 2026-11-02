@@ -11,10 +11,9 @@
 # （tools/patch_evalscope_dataset_offset.py，EVALSCOPE_DATASET_OFFSET 环境变量），
 # 配合 --limit WINDOW 取 [offset, offset+WINDOW)。
 #
-# 用法（宿主机）:
-#   bash /mnt/sfs_turbo/c00803992/tools/prepare_swe_bench_env.sh
-#   nohup bash /mnt/sfs_turbo/c00803992/swe_pro/run_all_batches.sh > \
-#       /mnt/sfs_turbo/c00803992/swe_pro/logs/batches.log 2>&1 &
+# 用法（宿主机; 路径默认从脚本自身位置推导, 也可 SWE_PRO/TOOLS 环境变量覆盖）:
+#   bash tools/prepare_swe_bench_env.sh
+#   nohup bash swe_pro/run_all_batches.sh > swe_pro/logs/batches.log 2>&1 &
 #
 # 环境变量: WINDOW(每批实例数, 默认32) CONCURRENCY(批内并发, 默认16)
 #            TOTAL(总实例数, 默认642) KEEP_IMAGES(1=不 prune)
@@ -27,11 +26,19 @@ START_OFFSET="${START_OFFSET:-0}"
 KEEP_IMAGES="${KEEP_IMAGES:-0}"
 PULL_THREADS="${PULL_THREADS:-16}"
 
-BASE=/mnt/sfs_turbo/c00803992/swe_pro
+# 路径可移植化: 默认从脚本位置推导（脚本应位于 swe_pro/ 内, tools/ 是其
+# 兄弟目录——仓库内 bootstrap 布局与本机 NFS 布局同构）; 环境变量可覆盖。
+# SWE_PRO 覆盖到别处而那里没有兄弟 tools/ 时, TOOLS 兜底回脚本自身位置的推导。
+BASE="${SWE_PRO:-$(cd "$(dirname "$0")" && pwd)}"
+TOOLS="${TOOLS:-$(cd "$BASE/.." && pwd)/tools}"
+[ -d "$TOOLS" ] || TOOLS="$(cd "$(dirname "$0")/.." && pwd)/tools"
+ROOT="$(cd "$TOOLS/.." && pwd)"     # dockersock/ 所在（relay socket 根）
+VENV="${VENV:-/tmp/bench-venv}"
+DISK_MOUNT="${DISK_MOUNT:-/mnt/docker}"
 LOGDIR="$BASE/logs"
 WORK="$BASE/results/accuracy/swe_bench_pro_dsv4"
 IMAGES_TRACKED="$LOGDIR/pruned_images.txt"
-CONTAINER=ais-bench
+CONTAINER="${CONTAINER:-ais-bench}"
 
 mkdir -p "$LOGDIR"
 touch "$IMAGES_TRACKED"
@@ -47,7 +54,7 @@ for ((off=START_OFFSET; off<TOTAL; off+=WINDOW)); do
     log "=== batch offset=$off count=$n ==="
 
     # 环境自愈：relay / binfmt / 容器内 evalscope 补丁
-    if ! bash /mnt/sfs_turbo/c00803992/tools/prepare_swe_bench_env.sh > "$LOGDIR/prepare_$off.log" 2>&1; then
+    if ! bash "$TOOLS/prepare_swe_bench_env.sh" > "$LOGDIR/prepare_$off.log" 2>&1; then
         log "ERROR: prepare failed, see $LOGDIR/prepare_$off.log"
         exit 1
     fi
@@ -58,11 +65,12 @@ for ((off=START_OFFSET; off<TOTAL; off+=WINDOW)); do
     sort -u "$IMAGES_TRACKED" -o "$IMAGES_TRACKED"
 
     # 并行预拉镜像：ms_enclave 自己串行拉（~0.25MB/s/张），这里先并发拉好
-    docker cp /mnt/sfs_turbo/c00803992/tools/prepull_swe_bench_images.py \
-        "$CONTAINER:/tmp/bench-venv/prepull_swe_bench_images.py" > /dev/null
+    docker cp "$TOOLS/prepull_swe_bench_images.py" \
+        "$CONTAINER:$VENV/prepull_swe_bench_images.py" > /dev/null
     log "pre-pulling $n images (threads=$PULL_THREADS)"
     if ! docker exec "$CONTAINER" bash -c \
-        "/tmp/bench-venv/bin/python /tmp/bench-venv/prepull_swe_bench_images.py $off $n $PULL_THREADS" \
+        "DOCKER_HOST=unix://$ROOT/dockersock/docker.sock \
+         $VENV/bin/python $VENV/prepull_swe_bench_images.py $off $n $PULL_THREADS" \
         > "$LOGDIR/prepull_$off.log" 2>&1; then
         log "WARN: pre-pull reported failures (see $LOGDIR/prepull_$off.log)"
     fi
@@ -97,10 +105,10 @@ for ((off=START_OFFSET; off<TOTAL; off+=WINDOW)); do
                 removed=$((removed + 1))
             fi
         done < "$LOGDIR/images_to_prune.txt"
-        log "pruned $removed images; disk: $(df -h /mnt/docker | tail -1 | awk '{print $4}') free"
+        log "pruned $removed images; disk: $(df -h "$DISK_MOUNT" | tail -1 | awk '{print $4}') free"
     fi
 
-    df -h /mnt/docker | tail -1 | awk '{print "  disk: " $4 " free (" $5 " used)"}'
+    df -h "$DISK_MOUNT" | tail -1 | awk '{print "  disk: " $4 " free (" $5 " used)"}'
 done
 
 log "all batches done"

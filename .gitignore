@@ -30,3 +30,9 @@ web_state.json
 
 # AgentX/HF 本地缓存
 .cache/
+
+# 可移植化部署产物（bootstrap_swe_pro.sh / setup.sh 生成, 勿提交）
+bfcl-venv/
+swe_pro/
+swe_bench_pro_os/
+dockersock/

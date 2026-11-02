@@ -108,19 +108,53 @@ def load_config(path: str) -> dict:
 
 
 def resolve_swe_config(cfg: dict, work_dir: str = None) -> dict:
-    """合并 config swe 段与默认值; 派生路径跟随 work_dir 推导（显式键优先）。"""
+    """合并 config swe 段与默认值; 派生路径跟随 work_dir 推导（显式键优先）。
+
+    全新克隆可移植性: 显式配置的路径不存在而仓库内 bootstrap 布局
+    （tools/bootstrap_swe_pro.sh 的默认位置）就绪 → 回退并提示。
+    本机绝对路径配置存在时优先, live 布局不受影响。"""
     sec = cfg.get("swe") or {}
     wd = str(work_dir or sec.get("work_dir") or DEFAULTS["work_dir"]).rstrip("/")
+    if wd and not os.path.isdir(wd):
+        local = os.path.join(KIT_ROOT, "swe_pro")
+        if os.path.isdir(local):
+            print(f"提示: swe.work_dir={wd} 不存在, 回退仓库内 {local}",
+                  file=sys.stderr)
+            wd = local
     if not wd:
         wd = DEFAULTS["work_dir"]
     sw = dict(DEFAULTS)
     sw.update(sec)
     sw["work_dir"] = wd
+    for key, rel, label in (
+            ("repo_path", ("swe_bench_pro_os", "repo"), "SWE-bench_Pro-os 仓库"),
+            ("relay_socket", ("dockersock", "docker.sock"), "docker unix relay")):
+        p = str(sw.get(key) or "")
+        if p and not os.path.exists(p):
+            local = os.path.join(KIT_ROOT, *rel)
+            if os.path.exists(local):
+                print(f"提示: swe.{key}={p} 不存在, 回退仓库内 {local}（{label}）",
+                      file=sys.stderr)
+                sw[key] = local
     if not str(sw.get("results_dir") or "").strip():
         sw["results_dir"] = os.path.join(wd, "results", "accuracy",
                                          "swe_bench_pro_dsv4")
+    elif not os.path.isdir(str(sw["results_dir"])):
+        # 配置的 results_dir 不存在（全新克隆）而派生路径已 bootstrap → 回退,
+        # 否则 work_dir 与 results_dir 会指向两套布局
+        derived = os.path.join(wd, "results", "accuracy", "swe_bench_pro_dsv4")
+        if os.path.isdir(derived):
+            print(f"提示: swe.results_dir={sw['results_dir']} 不存在, "
+                  f"回退派生路径 {derived}", file=sys.stderr)
+            sw["results_dir"] = derived
     if not str(sw.get("rerun_ids") or "").strip():
         sw["rerun_ids"] = os.path.join(wd, "rerun_ids.txt")
+    elif not os.path.isfile(str(sw["rerun_ids"])):
+        derived = os.path.join(wd, "rerun_ids.txt")
+        if os.path.isfile(derived):
+            print(f"提示: swe.rerun_ids={sw['rerun_ids']} 不存在, "
+                  f"回退派生路径 {derived}", file=sys.stderr)
+            sw["rerun_ids"] = derived
     sw["logs_dir"] = os.path.join(wd, "logs")
     sw["batches_log"] = os.path.join(sw["logs_dir"], "batches.log")
     sw["eval_rc_log"] = os.path.join(sw["logs_dir"], "eval_rc.log")

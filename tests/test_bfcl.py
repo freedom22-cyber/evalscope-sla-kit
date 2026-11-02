@@ -91,6 +91,39 @@ def _doc_scores(n=10):
     } | {k: {"score": v, "num": n} for k, v in {}.items()}
 
 
+def test_resolve_config_venv_fallback():
+    print("[config] 全新克隆 venv 回退（配置 venv 不存在 → 仓库内 bfcl-venv）")
+    old_root = bfcl_runner.KIT_ROOT
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            bfcl_runner.KIT_ROOT = td
+            # setup.sh 默认安装位置: 仓库内 bfcl-venv/bin/python
+            local = os.path.join(td, "bfcl-venv", "bin", "python")
+            os.makedirs(os.path.dirname(local))
+            with open(local, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(local, 0o755)
+            bf = bfcl_runner.resolve_bfcl_config(
+                {"bfcl": {"venv_python": "/definitely/not/exists/python"}})
+            check("venv 回退仓库内 bfcl-venv", bf["venv_python"] == local)
+            # 仓库内也没有 → 保留显式配置（dispatch 走 docker exec 前缀）
+            os.remove(local)
+            bf2 = bfcl_runner.resolve_bfcl_config(
+                {"bfcl": {"venv_python": "/definitely/not/exists2/python"}})
+            check("仓库内无 venv 时保留显式值",
+                  bf2["venv_python"] == "/definitely/not/exists2/python")
+            # live 布局: 配置存在 → 不回退
+            live = bfcl_runner.DEFAULTS["venv_python"]
+            if os.path.isfile(live):
+                bf3 = bfcl_runner.resolve_bfcl_config(
+                    {"bfcl": {"venv_python": live}})
+                check("配置 venv 存在时不回退", bf3["venv_python"] == live)
+            else:
+                check("（本机无 live venv, 跳过存在性分支）", True)
+    finally:
+        bfcl_runner.KIT_ROOT = old_root
+
+
 def test_compute_aggregates():
     print("[formula] compute_aggregates")
     scores = {k: {"score": v, "num": 10} for k, v in _doc_scores().items()}
@@ -235,6 +268,7 @@ def test_webapp_log_listing():
 
 def main():
     test_resolve_config()
+    test_resolve_config_venv_fallback()
     test_compute_aggregates()
     test_parse_report()
     test_build_cmd()

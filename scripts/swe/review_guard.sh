@@ -7,9 +7,11 @@
 # instead does os.replace(temp, base), clobbering the previous batch.  This
 # guard keeps a rolling copy of the temp file, so either ending is survivable.
 # It copies only on growth (cheap stat checks, 5s cadence).
-WORK=/mnt/sfs_turbo/c00803992/swe_pro/results/accuracy/swe_bench_pro_dsv4
-DEST=/mnt/sfs_turbo/c00803992/swe_pro/reviews_archive/live
-LOG=/mnt/sfs_turbo/c00803992/swe_pro/review_guard.log
+# 路径可移植化: 从脚本位置推导（脚本在 swe_pro/ 内）
+BASE="$(cd "$(dirname "$0")" && pwd)"
+WORK="${REVIEW_GUARD_WORK:-$BASE/results/accuracy/swe_bench_pro_dsv4}"
+DEST="${REVIEW_GUARD_DEST:-$BASE/reviews_archive/live}"
+LOG="$BASE/review_guard.log"
 mkdir -p "$DEST"
 declare -A last_size
 echo "$(date +%F\ %H:%M:%S) review_guard start" >> "$LOG"

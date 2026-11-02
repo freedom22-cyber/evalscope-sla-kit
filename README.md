@@ -115,6 +115,55 @@ python3 report.py --npu 8   # 8 卡时输出单卡吞吐列
 python3 webapp.py --port 8300
 ```
 
+### 全新克隆部署（BFCL + SWE-bench_Pro 线开箱即用）
+
+`setup.sh`、SWE 驱动脚本和两个 runner 都做了**路径可移植化**：config.yaml 里
+本机 NFS 绝对路径（`/mnt/sfs_turbo/c00803992/...`）在别的机器不存在时，
+自动回退到仓库内同构布局（stderr 打「回退」提示）；老部署显式配置的路径存在
+时优先，live 布局行为不变。
+
+```bash
+git clone https://github.com/huanghuancai666/evalscope-sla-kit
+cd evalscope-sla-kit
+
+# ① 主线 + BFCL 线一键安装
+#    bfcl-venv 默认装进仓库内 <repo>/bfcl-venv（setup.sh 的默认位置,
+#    bfcl_runner 在 config 指向的 venv 不存在时回退到这里）; 老部署想沿用
+#    外部路径: BFCL_VENV=/旧/路径 bash setup.sh
+#    容器名/装法可覆盖: CONTAINER=xxx BFCL_PY=python3.12 bash setup.sh
+bash setup.sh
+
+# ② SWE-bench_Pro 线一次性 bootstrap（宿主机执行, 幂等可重跑）
+#    建 <repo>/swe_pro 工作目录（从 scripts/swe/ 拷驱动, 不覆盖已有）+
+#    克隆 SWE-bench_Pro-os @ ca10a60 + 容器内 /tmp/bench-venv +
+#    relay/binfmt/evalscope 补丁 + ModelScope 数据集预热
+bash tools/bootstrap_swe_pro.sh
+
+# ③ 配置: swe/bfcl 段的绝对路径不存在时 runner 自动回退仓库内布局,
+#    可以不改; 必改 url / model / api_key / tokenizer_path
+vi config.yaml
+
+# ④ SWE 冒烟（2 实例）+ 监控
+docker exec -d ais-bench bash -c   "cd $PWD/swe_pro && bash run_swe_bench_pro.sh --limit 2"
+bash run.sh --swe status
+
+# ⑤ SWE 全量分批（642 条, 每批后 prune 镜像）
+cd swe_pro && nohup bash run_all_batches.sh > logs/batches.log 2>&1 &
+
+# ⑥ BFCL 函数调用评测
+bash run.sh --bfcl
+```
+
+前置条件（bootstrap 代劳不了的部分）:
+
+- 宿主机有 docker CLI 且当前用户可用；容器 `$CONTAINER`（默认 `ais-bench`）已创建。
+- 容器把仓库目录以**相同路径**挂进去（unix relay socket 与 `swe_pro/` 驱动
+  脚本都要求容器内外路径一致）：`docker run -v <repo>:<repo> ...`。
+- aarch64 宿主跑 amd64 sweap 镜像走 qemu binfmt（prepare 会建条目，需
+  binfmt_misc 可写）。
+- 驱动脚本全部路径可用环境变量覆盖：`SWE_PRO / TOOLS / VENV / CONTAINER /
+  DISK_MOUNT / RELAY_SOCK / OS_REPO / SWE_RESULTS`（详见各脚本头注释）。
+
 ## 精度测试（accuracy_runner.py）
 
 对被测服务跑 evalscope eval 数据集组（gsm8k / mmlu / gpqa_diamond / aime25+aime26 …），
@@ -458,7 +507,7 @@ python3 bfcl_runner.py --report                      # 汇总 results/bfcl/ 各�
 
 ```yaml
 bfcl:
-  venv_python: /mnt/sfs_turbo/c00803992/bfcl-venv/bin/python   # 容器内可见的独立 venv
+  venv_python: /mnt/sfs_turbo/c00803992/bfcl-venv/bin/python   # 不存在时回退 <repo>/bfcl-venv/bin/python
   container: ais-bench                 # 派发目标容器
   url: http://192.168.0.9:18020/v1     # 缺省回退 service.url
   model: dsv4                          # 缺省回退 service.model
@@ -493,8 +542,8 @@ Hallucination = mean( live_irrelevance, irrelevance )
 
 ### venv 重建（bfcl-venv 装法）
 
-`setup.sh` 的 [3.5/4] 步骤已内置下述安装（幂等, 可选线装失败仅告警）;
-以下命令用于手动重建:
+`setup.sh` 的 [3.5/4] 步骤已内置下述安装（幂等, 可选线装失败仅告警;
+全新克隆默认装仓库内 `bfcl-venv`）。以下命令用于手动重建（老 NFS 布局）:
 
 ```bash
 docker exec ais-bench /usr/local/python3.12.13/bin/python3.12 -m venv \
@@ -502,6 +551,12 @@ docker exec ais-bench /usr/local/python3.12.13/bin/python3.12 -m venv \
 docker exec ais-bench /mnt/sfs_turbo/c00803992/bfcl-venv/bin/pip install \
   -i https://pypi.tuna.tsinghua.edu.cn/simple \
   "evalscope==1.14.1" "bfcl-eval==2025.10.27.1" "pyarrow==21.0.0" soundfile
+```
+
+全新克隆等价做法（venv 落在仓库内, setup.sh 默认口径）:
+
+```bash
+BFCL_VENV=$PWD/bfcl-venv bash setup.sh          # 或直接跑 setup.sh, 默认即仓库内
 ```
 
 两个**必须显式补**的依赖（都是上游声明缺失踩出来的坑）：
@@ -583,6 +638,9 @@ docker exec ais-bench /mnt/sfs_turbo/c00803992/bfcl-venv/bin/pip install \
 
 ### 用法
 
+全新克隆先跑一次 `bash tools/bootstrap_swe_pro.sh`（幂等; 建 `swe_pro/`
+工作目录 + 克隆 OS 仓库 + 容器内 venv + relay/binfmt/补丁），之后:
+
 ```bash
 bash run.sh --swe status              # 状态: 当前批/进度行/ETA/进程活性/磁盘/崩溃标记
 bash run.sh --swe status --json       # 同上 JSON（web 端点即此输出）
@@ -605,7 +663,7 @@ swe:
   work_dir: /mnt/sfs_turbo/c00803992/swe_pro    # live 工作区（驱动/reviews/logs 都在这）
   results_dir: <work_dir>/results/accuracy/swe_bench_pro_dsv4   # 缺省由 work_dir 推导
   rerun_ids:   <work_dir>/rerun_ids.txt
-  repo_path: /mnt/sfs_turbo/c00803992/evalscope-sla-kit        # 驱动调用仓库内工具用
+  repo_path: /mnt/sfs_turbo/c00803992/swe_bench_pro_os/repo   # 不存在时回退 <repo>/swe_bench_pro_os/repo
   api_url: http://192.168.0.9:18020/v1/chat/completions
   model: dsv4
   venv: /tmp/bench-venv              # 容器内 evalscope venv（补丁所在）

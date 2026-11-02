@@ -31,33 +31,108 @@ def check(name, cond, detail=""):
 # ---------------------------------------------------------------- 配置解析 --
 def test_resolve_config():
     print("[config] resolve_swe_config")
-    # 1) swe 段缺失: 全默认 + 派生路径跟随 work_dir
-    sw = swe_runner.resolve_swe_config({})
-    check("默认 work_dir", sw["work_dir"] == "/mnt/sfs_turbo/c00803992/swe_pro")
-    check("默认 results_dir 跟随 work_dir",
-          sw["results_dir"].endswith(
-              "swe_pro/results/accuracy/swe_bench_pro_dsv4"))
-    check("默认 rerun_ids 跟随 work_dir",
-          sw["rerun_ids"].endswith("swe_pro/rerun_ids.txt"))
-    check("默认 logs 派生", sw["batches_log"].endswith("swe_pro/logs/batches.log"))
-    check("默认 model 不回退 service 段", sw["model"] == "dsv4")
+    # KIT_ROOT 指到空 tmp → 可移植回退（仓库内 swe_pro 布局）不触发,
+    # 断言的是“无回退”语义; 用例里的 work_dir 必须真实存在, 同理。
+    old_root = swe_runner.KIT_ROOT
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            swe_runner.KIT_ROOT = td
+            # 1) swe 段缺失: 全默认 + 派生路径跟随 work_dir
+            sw = swe_runner.resolve_swe_config({})
+            check("默认 work_dir",
+                  sw["work_dir"] == "/mnt/sfs_turbo/c00803992/swe_pro")
+            check("默认 results_dir 跟随 work_dir",
+                  sw["results_dir"].endswith(
+                      "swe_pro/results/accuracy/swe_bench_pro_dsv4"))
+            check("默认 rerun_ids 跟随 work_dir",
+                  sw["rerun_ids"].endswith("swe_pro/rerun_ids.txt"))
+            check("默认 logs 派生",
+                  sw["batches_log"].endswith("swe_pro/logs/batches.log"))
+            check("默认 model 不回退 service 段", sw["model"] == "dsv4")
 
-    # 2) swe 段显式优先
-    cfg = {"swe": {"work_dir": "/tmp/wd", "model": "m9",
-                   "eval_batch_size": 8}}
-    sw2 = swe_runner.resolve_swe_config(cfg)
-    check("swe.model 覆盖", sw2["model"] == "m9")
-    check("显式 work_dir 推导派生路径",
-          sw2["results_dir"] == "/tmp/wd/results/accuracy/swe_bench_pro_dsv4"
-          and sw2["rerun_ids"] == "/tmp/wd/rerun_ids.txt")
-    check("eval_batch_size 覆盖", sw2["eval_batch_size"] == 8)
+            # 2) swe 段显式优先（work_dir 必须存在, 否则会触发可移植回退）
+            wd = os.path.join(td, "wd")
+            os.makedirs(wd)
+            cfg = {"swe": {"work_dir": wd, "model": "m9",
+                           "eval_batch_size": 8}}
+            sw2 = swe_runner.resolve_swe_config(cfg)
+            check("swe.model 覆盖", sw2["model"] == "m9")
+            check("显式 work_dir 推导派生路径",
+                  sw2["results_dir"] == os.path.join(
+                      wd, "results/accuracy/swe_bench_pro_dsv4")
+                  and sw2["rerun_ids"] == os.path.join(wd, "rerun_ids.txt"))
+            check("eval_batch_size 覆盖", sw2["eval_batch_size"] == 8)
 
-    # 3) --work-dir 覆盖 + 显式 results_dir 优先于推导
-    sw3 = swe_runner.resolve_swe_config(
-        {"swe": {"results_dir": "/keep/old"}}, work_dir="/other/wd")
-    check("--work-dir 覆盖 work_dir", sw3["work_dir"] == "/other/wd")
-    check("显式 results_dir 不被 work_dir 改写", sw3["results_dir"] == "/keep/old")
-    check("--work-dir 推导 rerun_ids", sw3["rerun_ids"] == "/other/wd/rerun_ids.txt")
+            # 3) --work-dir 覆盖 + 显式 results_dir 优先于推导
+            other_wd = os.path.join(td, "other_wd")
+            os.makedirs(other_wd)
+            sw3 = swe_runner.resolve_swe_config(
+                {"swe": {"results_dir": "/keep/old"}}, work_dir=other_wd)
+            check("--work-dir 覆盖 work_dir", sw3["work_dir"] == other_wd)
+            check("显式 results_dir 不被 work_dir 改写",
+                  sw3["results_dir"] == "/keep/old")
+            check("--work-dir 推导 rerun_ids",
+                  sw3["rerun_ids"] == os.path.join(other_wd, "rerun_ids.txt"))
+    finally:
+        swe_runner.KIT_ROOT = old_root
+
+
+def test_resolve_config_portable_fallback():
+    print("[config] 全新克隆可移植回退（配置绝对路径不存在 → 仓库内布局）")
+    old_root = swe_runner.KIT_ROOT
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            swe_runner.KIT_ROOT = td
+            # bootstrap_swe_pro.sh 的仓库内布局
+            wd = os.path.join(td, "swe_pro")
+            os.makedirs(os.path.join(wd, "logs"))
+            results = os.path.join(wd, "results", "accuracy",
+                                   "swe_bench_pro_dsv4")
+            os.makedirs(results)
+            rerun_ids = os.path.join(wd, "rerun_ids.txt")
+            open(rerun_ids, "w", encoding="utf-8").close()
+            relay = os.path.join(td, "dockersock", "docker.sock")
+            os.makedirs(os.path.dirname(relay))
+            open(relay, "w", encoding="utf-8").close()
+            os_repo = os.path.join(td, "swe_bench_pro_os", "repo")
+            os.makedirs(os_repo)
+            sw = swe_runner.resolve_swe_config({
+                "swe": {
+                    "work_dir": "/definitely/not/exists/swe_pro",
+                    "results_dir": "/definitely/not/exists/results",
+                    "rerun_ids": "/definitely/not/exists/rerun_ids.txt",
+                    "repo_path": "/definitely/not/exists/repo",
+                    "relay_socket": "/definitely/not/exists/docker.sock",
+                }})
+            check("work_dir 回退仓库内 swe_pro", sw["work_dir"] == wd)
+            check("repo_path 回退", sw["repo_path"] == os_repo)
+            check("relay_socket 回退", sw["relay_socket"] == relay)
+            check("results_dir 回退派生（避免两套布局）",
+                  sw["results_dir"] == results)
+            check("rerun_ids 回退派生", sw["rerun_ids"] == rerun_ids)
+            check("logs_dir 跟随回退后 work_dir",
+                  sw["logs_dir"] == os.path.join(wd, "logs"))
+            check("batches_log 派生",
+                  sw["batches_log"].endswith("swe_pro/logs/batches.log"))
+            check("live_driver 派生",
+                  sw["live_driver"] == os.path.join(wd, "run_all_batches.sh"))
+            # 派生路径也没 bootstrap（更早的裸克隆）→ 保留显式配置不瞎猜
+            bare_wd = os.path.join(td, "bare_wd")   # 存在但无派生子目录
+            os.makedirs(bare_wd)
+            sw2 = swe_runner.resolve_swe_config(
+                {"swe": {"results_dir": "/keep/old",
+                         "rerun_ids": "/keep/old.txt"}},
+                work_dir=bare_wd)
+            check("派生不存在时显式 results_dir 保留",
+                  sw2["results_dir"] == "/keep/old")
+            check("派生不存在时显式 rerun_ids 保留",
+                  sw2["rerun_ids"] == "/keep/old.txt")
+    finally:
+        swe_runner.KIT_ROOT = old_root
+    # live 布局: 配置路径存在 → 不回退（本机断言; 其他机器上仍以 /swe_pro 结尾）
+    sw3 = swe_runner.resolve_swe_config({})
+    check("无回退场景 work_dir 形如 .../swe_pro",
+          sw3["work_dir"].endswith("/swe_pro"))
 
 
 # ---------------------------------------------------------------- 批次日志 --
@@ -685,6 +760,7 @@ def test_webapp_swe_webctl_commands():
 # ---------------------------------------------------------------- 主入口 --
 def main():
     test_resolve_config()
+    test_resolve_config_portable_fallback()
     test_parse_batches_log()
     test_parse_progress_line()
     test_find_progress()

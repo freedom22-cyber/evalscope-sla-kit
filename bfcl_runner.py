@@ -139,6 +139,15 @@ def resolve_bfcl_config(cfg: dict) -> dict:
         bf["model"] = (svc.get("model") or "").strip()
     if not str(bf.get("api_key") or "").strip():
         bf["api_key"] = str(req.get("api_key") or "").strip() or "EMPTY"
+    # 全新克隆可移植性: 配置的 venv 不存在而仓库内 bfcl-venv 就绪（setup.sh 的
+    # 默认安装位置）→ 回退。本机绝对路径配置存在时优先, live 布局不受影响。
+    venv_py = str(bf.get("venv_python") or "")
+    if venv_py and not os.path.isfile(venv_py):
+        local = os.path.join(KIT_ROOT, "bfcl-venv", "bin", "python")
+        if os.path.isfile(local) and os.access(local, os.X_OK):
+            print(f"提示: config bfcl.venv_python={venv_py} 不存在, "
+                  f"回退仓库内 {local}", file=sys.stderr)
+            bf["venv_python"] = local
     return bf
 
 

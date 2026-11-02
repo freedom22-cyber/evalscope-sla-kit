@@ -5,10 +5,10 @@
 #
 # 参考文档: https://evalscope.readthedocs.io/zh-cn/latest/benchmarks/swe_bench_pro.html
 #
-# 用法（宿主机）:
-#   bash /mnt/sfs_turbo/c00803992/tools/prepare_swe_bench_env.sh   # 幂等环境准备
-#   docker exec -d ais-bench bash -c "cd /mnt/sfs_turbo/c00803992/swe_pro \
-#     && bash run_swe_bench_pro.sh --limit 2"
+# 用法（宿主机; 路径默认从脚本自身位置推导: tools/ dockersock/ swe_bench_pro_os/
+# 是 swe_pro/ 的兄弟目录, 环境变量 DOCKER_HOST/REPO_PATH/WORK_DIR/VENV 可覆盖）:
+#   bash tools/prepare_swe_bench_env.sh    # 幂等环境准备
+#   docker exec -d ais-bench bash -c "cd swe_pro && bash run_swe_bench_pro.sh --limit 2"
 #   日志: logs/swe_bench_pro_run1.log
 #
 # 环境要点（2026-10-30 踩坑记录）:
@@ -29,16 +29,19 @@
 #     已由 tools/patch_swe_bench_pro_tests.py 修补（容器重建后需重打）。
 # ============================================================================
 set -eu
-cd "$(dirname "$0")"
+BASE="$(cd "$(dirname "$0")" && pwd)"      # = swe_pro/
+SIBLING="$(cd "$BASE/.." && pwd)"          # tools/ dockersock/ swe_bench_pro_os/ 所在
+VENV="${VENV:-/tmp/bench-venv}"
+cd "$BASE"
 mkdir -p logs results/accuracy
 
-export DOCKER_HOST=unix:///mnt/sfs_turbo/c00803992/dockersock/docker.sock
-export PATH=/tmp/bench-venv/bin:$PATH
+export DOCKER_HOST="${DOCKER_HOST:-unix://$SIBLING/dockersock/docker.sock}"
+export PATH="$VENV/bin:$PATH"
 
 API_URL="${API_URL:-http://192.168.0.9:18020/v1/chat/completions}"
 MODEL="${MODEL:-dsv4}"
-REPO_PATH="${REPO_PATH:-/mnt/sfs_turbo/c00803992/swe_bench_pro_os/repo}"
-WORK_DIR="${WORK_DIR:-/mnt/sfs_turbo/c00803992/swe_pro/results/accuracy/swe_bench_pro_dsv4}"
+REPO_PATH="${REPO_PATH:-$SIBLING/swe_bench_pro_os/repo}"
+WORK_DIR="${WORK_DIR:-$BASE/results/accuracy/swe_bench_pro_dsv4}"
 
 # max_steps: 默认 250（官方默认）。内存/CPU 限制避免 NodeBB 等实例被 OOM kill。
 AGENT_CONFIG="${AGENT_CONFIG:-{\"mode\":\"native\",\"strategy\":\"swe_bench_toolcall\",\"max_steps\":250}}"
@@ -49,7 +52,7 @@ SANDBOX="${SANDBOX:-{\"enabled\":true,\"engine\":\"docker\",\"default_config\":{
 # the evalscope rerun-temp deletion eat the whole batch's review rows
 # (batch 134, 2026-10-31).  Capture the rc and keep going instead.
 set +e
-/tmp/bench-venv/bin/evalscope eval \
+"$VENV/bin/evalscope" eval \
   --model "$MODEL" --model-id "$MODEL" --eval-type openai_api \
   --api-url "$API_URL" \
   --api-key EMPTY \
@@ -70,7 +73,7 @@ set +e
 EVAL_RC=$?
 set -e
 echo "[eval] offset=${EVALSCOPE_DATASET_OFFSET:-0} rc=$EVAL_RC ended $(date +%H:%M:%S)" \
-  >> /mnt/sfs_turbo/c00803992/swe_pro/logs/eval_rc.log || true
+  >> "$BASE/logs/eval_rc.log" || true
 
 # ---- post-eval snapshot (run_all_batches re-reads this file fresh per batch).
 # evalscope reviews are transactional: a normal eval end os.replace()s the
@@ -78,9 +81,9 @@ echo "[eval] offset=${EVALSCOPE_DATASET_OFFSET:-0} rc=$EVAL_RC ended $(date +%H:
 # crashed eval deletes the temp instead.  Freeze whatever survived so no
 # batch boundary can lose review data.  review_guard.sh additionally
 # live-copies the temp file while the eval writes it.
-snap_dst="/mnt/sfs_turbo/c00803992/swe_pro/reviews_archive/post_${EVALSCOPE_DATASET_OFFSET:-0}_$(date +%H%M%S)"
+snap_dst="$BASE/reviews_archive/post_${EVALSCOPE_DATASET_OFFSET:-0}_$(date +%H%M%S)"
 mkdir -p "$snap_dst" || true
 for f in "$WORK_DIR"/reviews/*/*.jsonl*; do
   [ -f "$f" ] && cat "$f" > "$snap_dst/$(basename "$f")" || true
 done
-echo "[snapshot] $(date +%H:%M:%S) offset=${EVALSCOPE_DATASET_OFFSET:-0}: $(ls "$snap_dst" 2>/dev/null | wc -l) files, $(cat "$snap_dst"/* 2>/dev/null | wc -l) rows" >> /mnt/sfs_turbo/c00803992/swe_pro/logs/snapshots.log || true
+echo "[snapshot] $(date +%H:%M:%S) offset=${EVALSCOPE_DATASET_OFFSET:-0}: $(ls "$snap_dst" 2>/dev/null | wc -l) files, $(cat "$snap_dst"/* 2>/dev/null | wc -l) rows" >> "$BASE/logs/snapshots.log" || true

@@ -52,12 +52,28 @@ import sys
 import tempfile
 import time
 
-SWE_PRO = os.environ.get("SWE_WEB_BRIDGE_WORK_DIR",
-                         "/mnt/sfs_turbo/c00803992/swe_pro")
-KIT_ROOT = "/mnt/sfs_turbo/c00803992/evalscope-sla-kit"
+# 路径可移植化: KIT_ROOT 从脚本自身位置推导（本机 live 布局下与原硬编码值
+# 相同）; SWE_PRO 优先环境变量, 其次仓库内 bootstrap 布局, 最后本机 NFS live
+# 布局——live 行为不变, 全新克隆自动用仓库内 swe_pro。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+KIT_ROOT = os.path.dirname(_HERE)
+
+
+def _default_swe_pro():
+    env = os.environ.get("SWE_WEB_BRIDGE_WORK_DIR")
+    if env:
+        return env
+    for cand in (os.path.join(KIT_ROOT, "swe_pro"),     # 仓库内 bootstrap 布局
+                 "/mnt/sfs_turbo/c00803992/swe_pro"):   # 本机 NFS live 布局
+        if os.path.isdir(cand):
+            return cand
+    return "/mnt/sfs_turbo/c00803992/swe_pro"
+
+
+SWE_PRO = _default_swe_pro()
 CONTAINER = os.environ.get("SWE_WEB_BRIDGE_CONTAINER", "ais-bench")
 VENV_PY = "/tmp/bench-venv/bin/python3"
-RECOVER_PY = "/mnt/sfs_turbo/c00803992/tools/recover_reviews_from_workspaces.py"
+RECOVER_PY = os.path.join(_HERE, "recover_reviews_from_workspaces.py")
 
 WEBCTL = os.path.join(SWE_PRO, "webctl")
 STATE_PATH = os.path.join(WEBCTL, "state.json")
