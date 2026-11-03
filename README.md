@@ -24,7 +24,7 @@ evalscope_sla_kit/
 ├── runner.py           # 摸高: 场景解析 + 数据集生成 + evalscope 命令构建执行
 ├── accuracy_runner.py  # 精度: 数据集组 x 轮的 evalscope eval + pass@k/mean 分数解析汇总
 ├── agentx_runner.py    # AgentX: 智能体回放（cc-traces 公共语料 / local:<目录> 本地裁剪语料）
-├── bfcl_runner.py      # BFCL: 函数调用评测（22 子集, evalscope bfcl_v4 适配器, 独立 bfcl-venv）
+├── bfcl_runner.py      # BFCL: 函数调用评测（22 子集，evalscope bfcl_v4 适配器，独立 bfcl-venv）
 ├── swe_runner.py       # SWE-bench_Pro: 只读监控/聚合/补跑（评测本体是 swe_pro 工作区的分批驱动）
 ├── scripts/run_api_e2e.py  # 功能测试: API E2E 框架（50 条用例 C01-C61 单一编号, 全非流式, PASS/WARN/FAIL/SKIP）
 ├── scripts/swe/        # swe_pro 驱动脚本的归档副本（只存档不执行, live 跑的是原件）
